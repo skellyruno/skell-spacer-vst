@@ -1,0 +1,47 @@
+name: SkellCore portable DSP tests
+on:
+  push:
+    paths:
+      - "SkellCore/**"
+      - "tools/**"
+      - ".github/workflows/skellcore.yml"
+  pull_request:
+    paths:
+      - "SkellCore/**"
+      - "tools/**"
+      - ".github/workflows/skellcore.yml"
+jobs:
+  core-native:
+    name: Core native / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S SkellCore -B build-core -DSKELLCORE_BUILD_TESTS=ON -DSKELLCORE_BUILD_BENCHMARKS=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build-core --config Release --parallel 2
+      - name: Test
+        run: ctest --test-dir build-core --build-config Release --output-on-failure
+      - name: CPU benchmark (non-gating measurements)
+        run: ctest --test-dir build-core --build-config Release -R SkellCoreBenchmark -V
+      - name: Verify plugin generator
+        run: python tools/test_new_plugin.py
+
+  core-sanitizers:
+    name: Linux ASan + UBSan DSP tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure sanitizers
+        run: cmake -S SkellCore -B build-sanitize -DCMAKE_BUILD_TYPE=Debug -DSKELLCORE_BUILD_TESTS=ON -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build sanitizer tests
+        run: cmake --build build-sanitize --parallel 2
+      - name: ASan / UBSan regression suite
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+        run: ctest --test-dir build-sanitize --output-on-failure
