@@ -20,7 +20,7 @@ juce_add_plugin(SkellSpacer
   IS_MIDI_EFFECT FALSE
   COPY_PLUGIN_AFTER_BUILD FALSE)
 juce_generate_juce_header(SkellSpacer)
-target_sources(SkellSpacer PRIVATE Source/PluginProcessor.cpp Source/PluginProcessor.h Source/PluginEditor.cpp Source/PluginEditor.h Source/SpacerDSP.h)
+target_sources(SkellSpacer PRIVATE Source/PluginProcessor.cpp Source/PluginProcessor.h Source/PluginEditor.cpp Source/PluginEditor.h Source/SpacerDSP.h Source/SkellTheme.h)
 target_compile_features(SkellSpacer PRIVATE cxx_std_17)
 target_compile_definitions(SkellSpacer PUBLIC JUCE_VST3_CAN_REPLACE_VST2=0)
 target_compile_definitions(SkellSpacer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)

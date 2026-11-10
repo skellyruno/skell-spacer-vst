@@ -7,6 +7,7 @@ public:
   SkellAudioProcessor();
   void prepareToPlay(double sampleRate, int samplesPerBlock) override;
   void releaseResources() override {}
+  void reset() override { engine.reset(); }
   bool isBusesLayoutSupported(const BusesLayout& l) const override;
   void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
   juce::AudioProcessorEditor* createEditor() override;
@@ -37,7 +38,7 @@ public:
 
 private:
   skell::SpacerEngine engine;
-  std::atomic<float> *pAmount{}, *pSmooth{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{};
+  std::atomic<float> *pAmount{}, *pSmooth{}, *pLink{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{};
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};

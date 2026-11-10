@@ -14,6 +14,7 @@ constexpr double kPi = 3.14159265358979323846;
 struct SpacerParams {
   float amount = 0.5f;       // 0..1  (share of 24 dB)
   float smooth = 0.3f;       // 0..1  (0..1 octave spread)
+  float link = 0.0f;         // 0..1  stereo link: blend each side's cut toward the deeper of the two
   float attackMs = 10.f;
   float releaseMs = 150.f;
   float lowHz = 20.f;
@@ -68,35 +69,38 @@ private:
 
 class SpacerEngine {
 public:
-  static constexpr int N = 2048;
-  static constexpr int HOP = N / 4;
-  static constexpr int K = N / 2 + 1;
-  static constexpr int kLatency = N;
   static constexpr int kDisp = 256;
   static constexpr int kMaxCh = 2;
   static constexpr float kMaxCutDb = 24.f;
 
-  SpacerEngine() {
-    fft.init(N);
-    win.resize(N);
-    for (int n = 0; n < N; ++n)
-      win[(size_t)n] = std::sqrt(0.5f - 0.5f * (float)std::cos(2.0 * kPi * n / N));
-    for (auto& c : ch) {
-      c.ring.assign(N, 0.f); c.scRing.assign(N, 0.f);
-      c.outReady.assign(HOP, 0.f); c.acc.assign(N, 0.f);
-      c.env.assign(K, 0.f);
-    }
-    re.resize(N); im.resize(N);
-    xr.resize(K); xi.resize(K); P.resize(K); Ps.resize(K); cum.resize(K + 1); bw.assign(K, 1.f);
-    prepare(48000.0);
-  }
+  SpacerEngine() { prepare(48000.0); }
+
+  // FFT size grows with the sample rate so bin width (and the ~43 ms latency) stay constant.
+  static int sizeFor(double sampleRate) { return sampleRate <= 50000.0 ? 2048 : (sampleRate <= 100000.0 ? 4096 : 8192); }
+  int latencySamples() const { return N; }
 
   void prepare(double sampleRate) {
     fs = sampleRate > 1000.0 ? sampleRate : 44100.0;
+    if (sizeFor(fs) != N || win.empty()) allocate(sizeFor(fs));
     mixStep = (float)(1.0 / (0.010 * fs));
     buildDisplayMap();
     bandDirty = true;
     reset();
+  }
+
+  void allocate(int n) {
+    N = n; HOP = n / 4; K = n / 2 + 1;
+    fft.init(N);
+    win.resize((size_t)N);
+    for (int i = 0; i < N; ++i) win[(size_t)i] = std::sqrt(0.5f - 0.5f * (float)std::cos(2.0 * kPi * i / N));
+    for (auto& c : ch) {
+      c.ring.assign((size_t)N, 0.f); c.scRing.assign((size_t)N, 0.f);
+      c.outReady.assign((size_t)HOP, 0.f); c.acc.assign((size_t)N, 0.f);
+      c.env.assign((size_t)K, 0.f); c.eff.assign((size_t)K, 0.f);
+      c.xr.assign((size_t)K, 0.f); c.xi.assign((size_t)K, 0.f); c.ps.assign((size_t)K, 0.f);
+    }
+    re.assign((size_t)N, 0.f); im.assign((size_t)N, 0.f);
+    P.assign((size_t)K, 0.f); cum.assign((size_t)K + 1, 0.f); bw.assign((size_t)K, 1.f);
   }
 
   void reset() {
@@ -115,6 +119,7 @@ public:
   void setParams(SpacerParams p) {
     p.amount = clamp01(p.amount);
     p.smooth = clamp01(p.smooth);
+    p.link = clamp01(p.link);
     p.lowHz = std::min(std::max(p.lowHz, 20.f), 20000.f);
     p.highHz = std::min(std::max(p.highHz, 20.f), 20000.f);
     if (p.highHz < p.lowHz * 1.25f) {
@@ -164,7 +169,7 @@ public:
 
 private:
   struct Chan {
-    std::vector<float> ring, scRing, outReady, acc, env;
+    std::vector<float> ring, scRing, outReady, acc, env, eff, xr, xi, ps;
     float peak = 0.f;
   };
 
@@ -174,7 +179,7 @@ private:
   void buildBand() {
     const float binHz = (float)(fs / N);
     for (int k = 0; k < K; ++k) {
-      const float f = k * binHz;
+      const float f = (float) k * binHz;
       float wl = 1.f, wh = 1.f;
       if (params.lowHz > 20.01f)
         wl = f <= 0.f ? 0.f : smoothstep((std::log2(f / params.lowHz) + 1.f / 6.f) * 3.f);
@@ -204,10 +209,11 @@ private:
     const float aCoef = std::exp(-hopSec / std::max(0.001f, params.attackMs * 0.001f));
     const float rCoef = std::exp(-hopSec / std::max(0.005f, params.releaseMs * 0.001f));
     const float peakDecay = std::exp(-hopSec / 2.0f);
-    const float norm = 1.f / (0.3183f * N);       // sine amplitude A -> |X|*norm = A
+    const float norm = 1.f / (0.3183f * (float) N);       // sine amplitude A -> |X|*norm = A
     const float depth = params.amount * kMaxCutDb;
     const float octHalf = std::exp2(params.smooth * 0.5f);
 
+    // pass 1: analyse each channel and follow its envelope
     for (int c = 0; c < nCh; ++c) {
       auto& s = ch[c];
       for (int n = 0; n < N; ++n) {
@@ -220,8 +226,8 @@ private:
       // split packed real FFT: Z = X + iS
       for (int k = 0; k < K; ++k) {
         const int j = (N - k) & (N - 1);
-        xr[(size_t)k] = 0.5f * (re[(size_t)k] + re[(size_t)j]);
-        xi[(size_t)k] = 0.5f * (im[(size_t)k] - im[(size_t)j]);
+        s.xr[(size_t)k] = 0.5f * (re[(size_t)k] + re[(size_t)j]);
+        s.xi[(size_t)k] = 0.5f * (im[(size_t)k] - im[(size_t)j]);
         const float sr = 0.5f * (im[(size_t)k] + im[(size_t)j]);
         const float si = -0.5f * (re[(size_t)k] - re[(size_t)j]);
         P[(size_t)k] = (sr * sr + si * si) * norm * norm;
@@ -231,22 +237,22 @@ private:
       cum[0] = 0.f;
       for (int k = 0; k < K; ++k) cum[(size_t)k + 1] = cum[(size_t)k] + P[(size_t)k];
       if (params.smooth < 0.01f) {
-        Ps = P;
+        s.ps = P;
       } else {
         for (int k = 0; k < K; ++k) {
           const int lo = (int)((float)k / octHalf);
           const int hi = std::min(K - 1, (int)((float)k * octHalf + 0.5f));
-          Ps[(size_t)k] = (cum[(size_t)hi + 1] - cum[(size_t)lo]) / (float)(hi - lo + 1);
+          s.ps[(size_t)k] = (cum[(size_t)hi + 1] - cum[(size_t)lo]) / (float)(hi - lo + 1);
         }
       }
 
       float curPeak = 0.f;
-      for (int k = 1; k < K; ++k) curPeak = std::max(curPeak, Ps[(size_t)k]);
+      for (int k = 1; k < K; ++k) curPeak = std::max(curPeak, s.ps[(size_t)k]);
       s.peak = std::max(curPeak, s.peak * peakDecay);
       const float peakDb = 10.f * std::log10(std::max(s.peak, 1e-20f));
 
       for (int k = 0; k < K; ++k) {
-        const float db = 10.f * std::log10(std::max(Ps[(size_t)k], 1e-20f));
+        const float db = 10.f * std::log10(std::max(s.ps[(size_t)k], 1e-20f));
         // no cut 50 dB under own recent peak, full cut at 10 dB under; ignore very quiet bins
         const float rel = clamp01((db - peakDb + 50.f) / 40.f);
         const float gate = clamp01((db + 85.f) / 10.f);
@@ -257,13 +263,26 @@ private:
           e = t + (e - t) * cf;
         }
       }
+    }
 
-      // apply gains, build Hermitian spectrum, inverse FFT
+    // stereo link: pull each side's cut toward the deeper of the two (applied cut only)
+    for (int c = 0; c < nCh; ++c) ch[c].eff = ch[c].env;
+    if (nCh == 2 && params.link > 0.f) {
       for (int k = 0; k < K; ++k) {
-        const float cutDb = depth * s.env[(size_t)k] * bw[(size_t)k];
+        const float a = ch[0].env[(size_t)k], b = ch[1].env[(size_t)k], m = std::max(a, b);
+        ch[0].eff[(size_t)k] = a + (m - a) * params.link;
+        ch[1].eff[(size_t)k] = b + (m - b) * params.link;
+      }
+    }
+
+    // pass 2: apply gains, build Hermitian spectrum, inverse FFT, overlap-add
+    for (int c = 0; c < nCh; ++c) {
+      auto& s = ch[c];
+      for (int k = 0; k < K; ++k) {
+        const float cutDb = depth * s.eff[(size_t)k] * bw[(size_t)k];
         const float g = std::exp(-cutDb * 0.11512925f);
-        re[(size_t)k] = xr[(size_t)k] * g;
-        im[(size_t)k] = -xi[(size_t)k] * g;  // conj for inverse-by-forward
+        re[(size_t)k] = s.xr[(size_t)k] * g;
+        im[(size_t)k] = -s.xi[(size_t)k] * g;  // conj for inverse-by-forward
         if (k > 0 && k < N / 2) {
           re[(size_t)(N - k)] = re[(size_t)k];
           im[(size_t)(N - k)] = -im[(size_t)k];
@@ -287,10 +306,10 @@ private:
     for (int i = 0; i < kDisp; ++i) {
       float m = 0.f, sc = 0.f, cut = 0.f;
       for (int k = dispLo[i]; k <= dispHi[i]; ++k) {
-        const float mag = std::sqrt(xr[(size_t)k] * xr[(size_t)k] + xi[(size_t)k] * xi[(size_t)k]) * norm;
+        const float mag = std::sqrt(s.xr[(size_t)k] * s.xr[(size_t)k] + s.xi[(size_t)k] * s.xi[(size_t)k]) * norm;
         m = std::max(m, mag * mag);
-        sc = std::max(sc, Ps[(size_t)k]);
-        cut = std::max(cut, depth * s.env[(size_t)k] * bw[(size_t)k]);
+        sc = std::max(sc, s.ps[(size_t)k]);
+        cut = std::max(cut, depth * s.eff[(size_t)k] * bw[(size_t)k]);
       }
       dispMain[i].store(10.f * std::log10(std::max(m, 1e-12f)), std::memory_order_relaxed);
       dispSc[i].store(10.f * std::log10(std::max(sc, 1e-12f)), std::memory_order_relaxed);
@@ -299,10 +318,11 @@ private:
   }
 
   double fs = 48000.0;
+  int N = 0, HOP = 0, K = 0;
   SpacerParams params;
   FFT fft;
   Chan ch[kMaxCh];
-  std::vector<float> win, re, im, xr, xi, P, Ps, cum, bw;
+  std::vector<float> win, re, im, P, cum, bw;
   int wpos = 0, hopCount = 0;
   float mix = 0.f, mixStep = 0.002f;
   bool bandDirty = true, hasSc = false;

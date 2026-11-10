@@ -26,13 +26,14 @@ SkellAudioProcessor::SkellAudioProcessor()
    parameters(*this, nullptr, "PARAMETERS", createLayout()) {
   pAmount = parameters.getRawParameterValue("amount");
   pSmooth = parameters.getRawParameterValue("smooth");
+  pLink = parameters.getRawParameterValue("link");
   pAttack = parameters.getRawParameterValue("attack");
   pRelease = parameters.getRawParameterValue("release");
   pLow = parameters.getRawParameterValue("lowcut");
   pHigh = parameters.getRawParameterValue("highcut");
   pFreeze = parameters.getRawParameterValue("freeze");
   pPower = parameters.getRawParameterValue("power");
-  setLatencySamples(skell::SpacerEngine::kLatency);
+  setLatencySamples(engine.latencySamples());
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createLayout() {
@@ -45,6 +46,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
     AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"smooth", 1}, "Smooth",
     juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 30.0f,
+    AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
+
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"link", 1}, "Stereo Link",
+    juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 0.0f,
     AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
 
   juce::NormalisableRange<float> atk(1.0f, 200.0f, 0.1f);  atk.setSkewForCentre(20.0f);
@@ -73,7 +78,7 @@ void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
   sampleRateHz.store(sampleRate);
   sidechainHold = 0;
   sidechainActive.store(false);
-  setLatencySamples(skell::SpacerEngine::kLatency);
+  setLatencySamples(engine.latencySamples());
 }
 
 bool SkellAudioProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
@@ -90,6 +95,7 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   skell::SpacerParams p;
   p.amount = pAmount->load() * 0.01f;
   p.smooth = pSmooth->load() * 0.01f;
+  p.link = pLink->load() * 0.01f;
   p.attackMs = pAttack->load();
   p.releaseMs = pRelease->load();
   p.lowHz = pLow->load();

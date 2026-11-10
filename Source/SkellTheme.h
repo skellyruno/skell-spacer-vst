@@ -1,7 +1,7 @@
 #pragma once
-// Skell house look, shared with Skell Key: warm "ossuary" black, bone-white type,
-// one accent colour, flat square controls, corner-bracket cards, skull-key mark,
-// four switchable skins (Bone, Neon, Graveyard, Clean).
+// Skell house look: warm "ossuary" black, bone-white type, one accent colour,
+// flat square controls, corner-bracket cards, four switchable skins
+// (Bone, Neon, Graveyard, Clean).
 #include <JuceHeader.h>
 
 namespace skelltheme {
@@ -35,6 +35,12 @@ inline juce::Font makeFont(float size, bool bold = false, float kerning = 0.0f) 
   return kerning != 0.0f ? f.withExtraKerningFactor(kerning) : f;
 }
 
+inline float textWidth(const juce::Font& f, const juce::String& s) {
+  juce::GlyphArrangement ga;
+  ga.addLineOfText(f, s, 0.0f, 0.0f);
+  return ga.getBoundingBox(0, -1, true).getWidth();
+}
+
 inline void drawText(juce::Graphics& g, const juce::String& text, juce::Rectangle<float> r, float size, bool bold,
                      juce::Colour colour, juce::Justification j = juce::Justification::centredLeft, float kerning = 0.0f) {
   g.setColour(colour);
@@ -57,22 +63,31 @@ inline void drawCard(juce::Graphics& g, juce::Rectangle<float> r) {
   g.strokePath(p, juce::PathStrokeType(1.4f));
 }
 
-// Skull-bowed skeleton key, about 74 x 30 units.
-inline void drawKeyMark(juce::Graphics& g, float x, float y, juce::Colour bone, juce::Colour hole) {
+// Skeleton spacer mark, about 74 x 30 units: a skull and a spine whose vertebrae
+// are held apart, with the carved-out space marked in the accent colour.
+inline void drawSpacerMark(juce::Graphics& g, float x, float y, juce::Colour bone, juce::Colour accent, juce::Colour hole) {
   g.setColour(bone);
-  g.fillEllipse(x + 1.0f, y + 0.0f, 25.0f, 23.0f);
-  g.fillRoundedRectangle(x + 6.5f, y + 17.0f, 14.0f, 11.0f, 3.0f);
-  g.fillRoundedRectangle(x + 25.0f, y + 10.5f, 48.0f, 4.2f, 1.6f);
-  g.fillRoundedRectangle(x + 33.0f, y + 7.0f, 3.2f, 11.5f, 1.2f);
-  g.fillRect(x + 56.0f, y + 14.0f, 4.2f, 9.0f);
-  g.fillRect(x + 63.0f, y + 14.0f, 4.2f, 6.0f);
-  g.fillRect(x + 69.5f, y + 14.0f, 3.5f, 10.0f);
+  g.fillEllipse(x + 1.0f, y + 3.0f, 22.0f, 20.0f);                       // cranium
+  g.fillRoundedRectangle(x + 6.0f, y + 19.0f, 12.0f, 8.0f, 2.5f);        // jaw
   g.setColour(hole);
-  g.fillEllipse(x + 6.2f, y + 8.4f, 6.4f, 6.8f);
-  g.fillEllipse(x + 14.6f, y + 8.4f, 6.4f, 6.8f);
-  juce::Path nose; nose.addTriangle(x + 13.5f, y + 15.0f, x + 11.6f, y + 19.0f, x + 15.4f, y + 19.0f);
+  g.fillEllipse(x + 5.5f, y + 10.0f, 5.6f, 6.2f);                        // eye sockets
+  g.fillEllipse(x + 13.2f, y + 10.0f, 5.6f, 6.2f);
+  juce::Path nose; nose.addTriangle(x + 12.0f, y + 16.5f, x + 10.6f, y + 19.5f, x + 13.4f, y + 19.5f);
   g.fillPath(nose);
-  for (int i = 0; i < 3; ++i) g.fillRect(x + 9.6f + 3.4f * (float) i, y + 22.0f, 1.0f, 5.0f);
+  for (int i = 0; i < 2; ++i) g.fillRect(x + 9.8f + 3.2f * (float) i, y + 22.5f, 0.9f, 4.5f);   // teeth gaps
+
+  static const float h[8] = { 13.f, 16.f, 14.f, 0.f, 0.f, 14.f, 16.f, 13.f };
+  const float cy = y + 15.0f, step = 5.6f, w = 4.0f, x0 = x + 27.0f;
+  for (int i = 0; i < 8; ++i) {
+    if (h[i] <= 0.0f) continue;
+    g.setColour(bone);
+    g.fillRoundedRectangle(x0 + step * (float) i, cy - h[i] * 0.5f, w, h[i], 1.4f);   // vertebra
+  }
+  g.setColour(accent);                                                    // the space between
+  const float gl = x0 + step * 3.0f - 1.6f, gr = x0 + step * 5.0f - 1.8f;
+  g.fillRect(gl, cy - 9.0f, 1.4f, 18.0f);
+  g.fillRect(gr, cy - 9.0f, 1.4f, 18.0f);
+  g.fillRect(gl + 1.4f, cy - 0.7f, gr - gl - 1.4f, 1.4f);
 }
 
 } // namespace skelltheme
