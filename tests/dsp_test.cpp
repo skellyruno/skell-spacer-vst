@@ -163,6 +163,40 @@ int main() {
     }
     check(rdb[1] < -8 && rdb[1] > rdb[0] + 4, "link 50%: R cut partway (R dB)", rdb[1]);
   }
+  { // 9c. pan and mid/side (Studio engine)
+    Sig sc = sines(n, { {1000, 0.5} });
+    Sig tone = sines(n, { {1000, 0.2} });
+    Sig midT = tone, sideT = tone;
+    for (size_t i = 0; i < sideT.r.size(); ++i) sideT.r[i] = -sideT.l[i];
+    auto cutDb = [&](const std::vector<float>& x) { return -db(amp(x, 1000, n - 24000, 24000) / 0.2); };
+    for (float pan : { -1.0f, 1.0f }) {
+      p = {}; p.amount = 1; p.pan = pan; { SpacerEngine e; e.prepare(FS); e.setParams(p); Sig o = run(e, tone, &sc, 256);
+        if (pan < 0) check(cutDb(o.l) > 20 && cutDb(o.r) < 0.5, "pan left (L/R): only left cut (dB)", cutDb(o.l));
+        else check(cutDb(o.r) > 20 && cutDb(o.l) < 0.5, "pan right (L/R): only right cut (dB)", cutDb(o.r)); }
+      p.ms = true; { SpacerEngine e; e.prepare(FS); e.setParams(p); Sig o = run(e, midT, &sc, 256);
+        SpacerEngine e2; e2.prepare(FS); e2.setParams(p); Sig o2 = run(e2, sideT, &sc, 256);
+        if (pan < 0) check(cutDb(o.l) > 20 && cutDb(o2.l) < 0.5, "M/S pan mid: mid cut, side untouched (dB)", cutDb(o.l));
+        else check(cutDb(o2.l) > 20 && cutDb(o.l) < 0.5, "M/S pan side: side cut, mid untouched (dB)", cutDb(o2.l)); }
+    }
+    p = {}; p.amount = 1; p.ms = true; p.power = false; SpacerEngine e; e.prepare(FS); e.setParams(p);
+    Sig o = run(e, track, &sc, 256);
+    double worst = 0; const int d = LAT(FS);
+    for (int i = d; i < n; ++i) worst = std::max(worst, (double)std::fabs(o.l[(size_t)i] - track.l[(size_t)(i - d)]));
+    check(worst < 1e-6, "M/S bypass is the delayed dry signal (max error)", worst);
+  }
+  { // 9d. toggling L/R <-> M/S while ducking centred material is seamless
+    Sig sc = sines(n, { {1000, 0.5} }), tone = sines(n, { {1000, 0.2} });
+    p = {}; p.amount = 1; SpacerEngine a, b; a.prepare(FS); b.prepare(FS); a.setParams(p); b.setParams(p);
+    Sig ref = run(a, tone, &sc, 256), tog = tone;
+    for (int blk = 0; blk * 256 + 256 <= n; ++blk) {
+      if (blk % 50 == 0) { p.ms = !p.ms; b.setParams(p); }
+      float* x[2] = { tog.l.data() + blk * 256, tog.r.data() + blk * 256 };
+      const float* s2[2] = { sc.l.data() + blk * 256, sc.r.data() + blk * 256 };
+      b.process(x, s2, 2, 2, 256);
+    }
+    double worst = 0; for (int i = 0; i < n; ++i) worst = std::max(worst, (double)std::fabs(tog.l[(size_t)i] - ref.l[(size_t)i]));
+    check(worst < 2e-3, "M/S toggling matches the L/R result (max difference)", worst);
+  }
   { // 10. no NaN on silence / extreme input
     SpacerEngine e; e.prepare(FS); p = {}; p.amount = 1; p.smooth = 1; e.setParams(p);
     Sig z; z.l.assign(48000, 0.f); z.r = z.l;

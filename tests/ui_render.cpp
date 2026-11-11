@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
   proc.setRateAndBufferSizeDetails(48000.0, 512);
   proc.prepareToPlay(48000.0, 512);
   check(proc.getTotalNumInputChannels() == 4, "main + sidechain buses enabled (4 input channels)");
-  check(proc.getLatencySamples() == 2048, "reports 2048 samples of latency");
+  check(proc.getLatencySamples() == 0, "Live (default) reports zero latency");
 
   // ---- render every skin at three sizes
   struct Size { int w, h; const char* tag; };
@@ -95,7 +95,7 @@ int main(int argc, char** argv) {
   int rotaries = 0;
   for (auto* c : ed->getChildren())
     if (auto* s = dynamic_cast<juce::Slider*>(c)) if (s->isRotary()) ++rotaries;
-  check(rotaries == 5, "five rotary controls present");
+  check(rotaries == 6, "six rotary controls present (incl. Pan)");
 
   auto* amount = find<juce::Slider>(*ed, [](juce::Slider& s) { return s.isRotary() && s.getMaximum() == 100.0 && s.getValue() == 85.0; });
   check(amount != nullptr, "amount knob mirrors the host parameter");
@@ -104,6 +104,20 @@ int main(int argc, char** argv) {
     check(std::abs(proc.parameters.getRawParameterValue("amount")->load() - 30.0f) < 0.01f, "dragging the knob updates the parameter");
     check(amount->getTextFromValue(30.0) == "30%", "knob text reads 30%");
   }
+
+  auto* panK = find<juce::Slider>(*ed, [](juce::Slider& s) { return s.isRotary() && s.getMinimum() < 0.0; });
+  check(panK != nullptr, "bipolar pan knob present");
+  if (panK) {
+    panK->setValue(-40.0, juce::sendNotificationSync);
+    check(std::abs(proc.parameters.getRawParameterValue("pan")->load() + 40.0f) < 0.01f, "pan knob updates the parameter");
+    check(panK->getTextFromValue(-40.0) == "40 L" && panK->getTextFromValue(0.0) == "C", "pan reads 40 L / C");
+    panK->setValue(0.0, juce::sendNotificationSync);
+  }
+  auto* msBtn = find<juce::TextButton>(*ed, [](juce::TextButton& b) { return b.getComponentID() == "labelbutton"; });
+  check(msBtn != nullptr, "L/R - M/S label button present");
+  if (msBtn) { msBtn->triggerClick(); pump(); check(proc.parameters.getRawParameterValue("ms")->load() > 0.5f, "label button switches to M/S");
+    savePng(ed->createComponentSnapshot(ed->getLocalBounds(), true, 2.0f), outDir.getChildFile("ms_mode.png"));
+    msBtn->triggerClick(); pump(); check(proc.parameters.getRawParameterValue("ms")->load() < 0.5f, "label button switches back to L/R"); }
 
   auto* freeze = find<juce::TextButton>(*ed, [](juce::TextButton& b) { return b.getButtonText() == "Freeze"; });
   auto* power = find<juce::TextButton>(*ed, [](juce::TextButton& b) { return b.getButtonText() == "Power"; });

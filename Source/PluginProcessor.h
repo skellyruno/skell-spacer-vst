@@ -1,7 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "SpacerDSP.h"
-#include <SkellCore/LiveEngine.h>
+#include "ZeroLatencyEngine.h"
 
 class SkellAudioProcessor final : public juce::AudioProcessor {
 public:
@@ -48,8 +48,8 @@ public:
 
 private:
   skell::SpacerEngine engine;
-  skellcore::live::LiveMultibandDucker liveEngine;
-  std::atomic<float> *pAmount{}, *pSmooth{}, *pLink{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{}, *pLive{};
+  skell::ZeroLatencyEngine liveEngine;
+  std::atomic<float> *pAmount{}, *pSmooth{}, *pLink{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{}, *pLive{}, *pPan{}, *pMs{};
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};

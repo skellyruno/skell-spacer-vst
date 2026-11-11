@@ -51,11 +51,11 @@ private:
   int theme = 0;
   std::unique_ptr<SkellLookAndFeel> look;
   SpectrumView spectrum;
-  juce::Slider amount, smooth, link, attack, release, band;
-  juce::TextButton freeze { "Freeze" }, power { "Power" }, live { "Live" }, skinButton;
+  juce::Slider amount, smooth, link, pan, attack, release, band;
+  juce::TextButton freeze { "Freeze" }, power { "Power" }, live { "Live" }, skinButton, msToggle;
 
-  juce::AudioProcessorValueTreeState::SliderAttachment amountA, smoothA, linkA, attackA, releaseA;
-  juce::AudioProcessorValueTreeState::ButtonAttachment freezeA, powerA, liveA;
+  juce::AudioProcessorValueTreeState::SliderAttachment amountA, smoothA, linkA, panA, attackA, releaseA;
+  juce::AudioProcessorValueTreeState::ButtonAttachment freezeA, powerA, liveA, msA;
   juce::RangedAudioParameter *lowParam, *highParam;
   juce::ParameterAttachment lowA, highA;
   int draggedThumb = 0;

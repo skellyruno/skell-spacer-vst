@@ -10,18 +10,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          repository: skellyruno/skell-vst-template
-          ref: 4c05e29cb0d8b30bf25a0aa857c0c71e86f2da87
-          path: _skellcore
       - name: DSP tests (original Studio)
         run: |
           g++ -O2 -std=c++17 -I Source tests/dsp_test.cpp -o dsp_test
           ./dsp_test
-      - name: Live path + intrinsic-latency regression
+      - name: DSP tests (zero-latency Live engine)
         run: |
-          g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I _skellcore/SkellCore/include tests/live_dsp_test.cpp -o live_dsp_test
+          g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/live_dsp_test.cpp -o live_dsp_test
           ./live_dsp_test
   build:
     runs-on: windows-latest

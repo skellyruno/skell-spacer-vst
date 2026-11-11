@@ -4,22 +4,24 @@ A Trackspacer-style **sidechain spectral ducker** (VST3, JUCE 8). Put it on the 
 
 Built from the Skell VST3 template (CMake + GitHub Actions); behaviour follows the SpaceBtw manual.
 
-## Live Tracking vs Studio
+## Live vs Studio
 
-The original high-resolution sidechain FFT processor remains the **Studio** path and the default for existing sessions. The new **Live** button selects an independently developed 10-band causal filter-bank processor shared from SkellCore:
+**Live** (default) is a zero-latency engine, like Trackspacer: the sidechain goes through a 60-band filter bank (6 bands per octave), each band's level sets a cut depth, and the cut is applied to the track by a chain of minimum-phase bell filters. There is no FFT and no lookahead in the audio path, so the plugin adds **0 samples** of delay. **Studio** is the higher-resolution FFT engine (2,048 samples = 42.67 ms at 44.1/48 kHz); it is more precise but delayed.
 
-| Processing mode | Intrinsic delay at 48 kHz | Tradeoff |
-| --- | ---: | --- |
-| Studio (default, original) | 2,048 samples = **42.67 ms** | Original high-resolution FFT sidechain ducking |
-| Live (opt-in) | **0 added samples** | Tracking-friendly, lower spectral selectivity and a different phase/tonal response |
+| Mode | Plugin latency | Character |
+|---|---|---|
+| Live (default) | **0 samples** | Real-time, tracking-friendly, 1/6-octave resolution |
+| Studio | 2,048 samples (scales with sample rate) | Finest spectral detail, for mixing/mastering |
 
-**Important:** zero *plugin-added* delay is not zero audible monitoring latency. FL Studio, the audio interface/ASIO driver, audio buffer, and any earlier plugins in the monitoring chain still add delay. Test with a 64/128-sample audio buffer if the PC can run it without dropouts. The previously reported ~70 ms is plausibly a combination of this plugin's Studio FFT delay and other audio-device/host buffering; that total has not been measured here.
+**Important:** zero *plugin-added* delay is not zero audible monitoring latency. The DAW, audio interface/ASIO driver, buffer size and earlier plugins still add delay; use a 64/128-sample buffer if the PC can run it.
 
-Live keeps existing Amount, Smooth, Link, Attack, Release, band cut, Freeze and Power controls, but its filter-bank sound differs from Studio. The new `liveMode` state defaults **off** so old projects keep the old sound; no existing parameter IDs or plugin identity were changed.
+Choose Live/Studio **with the transport stopped**: the host must agree with the reported delay, so the editor defers a requested change until playback stops and then calls `setLatencySamples()` on the message thread (the editor shows STOP TO APPLY MODE while pending). Live is also applied at `prepareToPlay()` when a project loads. Both modes share every control and the same spectrum display.
 
-The DAW must agree with the currently reported processing delay. Choose Live/Studio **while the transport is stopped**; the editor defers mode changes requested during playback until the transport stops, when it safely calls JUCE `setLatencySamples()` on the **message thread**, never in the audio callback. If a host cannot apply the change immediately, save and reload the plugin or reopen the project. The editor displays **STOP TO APPLY MODE** when a change is pending. For consistency, Live mode also applies at `prepareToPlay()` when loading a saved plugin. Do not automate this mode switch during active recording. Metering continues in both modes.
+### Link, Pan and Mid/Side
+- **Link** (a Skell addition, not a Trackspacer control): with a stereo sidechain, each side normally ducks from its own sidechain channel (0 %). Raising Link pulls both sides toward the deeper of the two cuts, 100 % = both sides always duck equally, which keeps the stereo image stable.
+- **Pan** (like Trackspacer): where the ducking is applied. Centre = both sides; towards an edge = only that side.
+- **L/R / M/S** (click the PAN label): switches what Pan means. In M/S the track is split into mid and side (the sidechain is summed to mono), so Pan left = duck only the mid, Pan right = duck only the side.
 
-The Live algorithm uses no lookahead, FFT window waiting, allocations, locks, or host display notifications inside its per-sample processing. Its output is not mathematically the same as the existing STFT processing, so judge the tradeoff on real vocal/pad/kick sidechain sessions before choosing Live for final mixing.
 
 ## Controls
 | Control | Range | Default |
@@ -27,6 +29,8 @@ The Live algorithm uses no lookahead, FFT window waiting, allocations, locks, or
 | Amount | 0-100 % of 24 dB | 50 % |
 | Smooth | 0-100 % (0 to 1 octave spread) | 30 % |
 | Stereo Link | 0-100 % (pulls each side's cut toward the deeper of L/R) | 0 % |
+| Pan | L100 - R100 (M/S mode: Mid - Side) | C |
+| L/R / M/S | label button under Pan | L/R |
 | Attack | 1-200 ms | 10 ms |
 | Release | 10-1000 ms | 150 ms |
 | Low Cut / High Cut | 20 Hz-20 kHz, kept >= 1.25x apart, soft 1/3-octave edges | open |
@@ -47,7 +51,7 @@ Push this folder to GitHub, then **Actions -> Build Windows VST3 -> Run workflow
 
 Local: `cmake -S . -B build -A x64 -DJUCE_PATH=C:/JUCE` then `cmake --build build --config Release --parallel 2` (without `JUCE_PATH`, JUCE 8.0.12 is fetched).
 
-Original Studio DSP tests (no JUCE needed, run in CI): `g++ -O2 -std=c++17 -I Source tests/dsp_test.cpp -o dsp_test && ./dsp_test`
+DSP tests (no JUCE needed, run in CI): `g++ -O2 -std=c++17 -I Source tests/dsp_test.cpp -o dsp_test && ./dsp_test` (Studio) and the same for `tests/live_dsp_test.cpp` (Live: zero latency, bit-exact idle, selectivity at 44.1-192 kHz, link, pan, M/S, NaN safety, CPU)
 They cover exact bypass, cut depth and accuracy, level independence, band, freeze, stereo/link, mono, 44.1-192 kHz, block-size independence, click-free parameter changes, overshoot, NaN/denormal safety and CPU.
 
 Editor test (optional, headless): `tests/ui_render.sh <JUCE dir> <prebuilt module objects> <out dir>` renders every skin at three window sizes to PNG and checks that knobs, buttons and the band slider drive the parameters, parameter text parsing, and state save/restore. The script header lists the JUCE translation units it needs.
@@ -56,7 +60,7 @@ Editor test (optional, headless): `tests/ui_render.sh <JUCE dir> <prebuilt modul
 Skell house look: warm black, bone-white kerned type, one accent colour, flat square buttons, corner-bracket cards. Click the logo (top-left) to cycle Bone / Neon / Graveyard / Clean; the choice is saved with the plugin state. The header strip lights up with the deepest current cut.
 
 ## Layout
-- `SkellCore/LiveEngine.h` (immutable pinned shared dependency) - Live zero-added-delay engine and latency contract
+- `Source/ZeroLatencyEngine.h` - JUCE-free zero-latency Live engine (filter bank + bell chain; the FFT there only drives the display)
 - `Source/SpacerDSP.h` - JUCE-free Studio engine (FFT, spectral ducking, display data)
 - `Source/PluginProcessor.*` - parameters, sidechain bus, state
 - `Source/SkellTheme.h` - Skell house look (4 skins, bracket cards, spacer mark)

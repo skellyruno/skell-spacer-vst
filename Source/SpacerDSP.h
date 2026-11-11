@@ -19,6 +19,8 @@ struct SpacerParams {
   float releaseMs = 150.f;
   float lowHz = 20.f;
   float highHz = 20000.f;
+  float pan = 0.f;           // -1..1: L/R mode: left..right; M/S mode: mid..side. 0 = both
+  bool ms = false;           // false = L/R, true = M/S
   bool freeze = false;
   bool power = true;
 };
@@ -100,6 +102,7 @@ public:
       c.xr.assign((size_t)K, 0.f); c.xi.assign((size_t)K, 0.f); c.ps.assign((size_t)K, 0.f);
     }
     re.assign((size_t)N, 0.f); im.assign((size_t)N, 0.f);
+    for (auto& t : tmp) t.assign((size_t)N, 0.f);
     P.assign((size_t)K, 0.f); cum.assign((size_t)K + 1, 0.f); bw.assign((size_t)K, 1.f);
   }
 
@@ -120,6 +123,7 @@ public:
     p.amount = clamp01(p.amount);
     p.smooth = clamp01(p.smooth);
     p.link = clamp01(p.link);
+    p.pan = std::min(1.f, std::max(-1.f, p.pan));
     p.lowHz = std::min(std::max(p.lowHz, 20.f), 20000.f);
     p.highHz = std::min(std::max(p.highHz, 20.f), 20000.f);
     if (p.highHz < p.lowHz * 1.25f) {
@@ -140,9 +144,9 @@ public:
       if (mix < target) mix = std::min(target, mix + mixStep);
       else if (mix > target) mix = std::max(target, mix - mixStep);
 
+      float out[kMaxCh] = {};
       for (int c = 0; c < nCh; ++c) {
         auto& s = ch[c];
-        const float x = main[c][i];
         float scv = 0.f;
         if (nSc > 0) {
           if (nCh == 1 && nSc >= 2) scv = 0.5f * (sc[0][i] + sc[1][i]);
@@ -150,10 +154,11 @@ public:
         }
         const float dry = s.ring[(size_t)wpos];
         const float w = s.outReady[(size_t)hopCount];
-        s.ring[(size_t)wpos] = x;
+        s.ring[(size_t)wpos] = main[c][i];
         s.scRing[(size_t)wpos] = scv;
-        main[c][i] = mix <= 0.f ? dry : (mix >= 1.f ? w : dry + (w - dry) * mix);
+        out[c] = mix <= 0.f ? dry : (mix >= 1.f ? w : dry + (w - dry) * mix);
       }
+      for (int c = 0; c < nCh; ++c) main[c][i] = out[c];
       wpos = (wpos + 1) & (N - 1);
       if (++hopCount == HOP) { hopCount = 0; runFrame(nCh); }
     }
@@ -212,14 +217,20 @@ private:
     const float norm = 1.f / (0.3183f * (float) N);       // sine amplitude A -> |X|*norm = A
     const float depth = params.amount * kMaxCutDb;
     const float octHalf = std::exp2(params.smooth * 0.5f);
+    const bool msMode = params.ms && nCh == 2;      // rings and overlap-add always hold L/R, so switching is seamless
 
     // pass 1: analyse each channel and follow its envelope
     for (int c = 0; c < nCh; ++c) {
       auto& s = ch[c];
       for (int n = 0; n < N; ++n) {
         const int idx = (wpos + n) & (N - 1);
-        re[(size_t)n] = s.ring[(size_t)idx] * win[(size_t)n];
-        im[(size_t)n] = s.scRing[(size_t)idx] * win[(size_t)n];
+        float x = s.ring[(size_t)idx], d = s.scRing[(size_t)idx];
+        if (msMode) {                    // analyse mid (c=0) / side (c=1); sidechain summed to mono
+          x = 0.5f * (ch[0].ring[(size_t)idx] + (c ? -1.f : 1.f) * ch[1].ring[(size_t)idx]);
+          d = 0.5f * (ch[0].scRing[(size_t)idx] + ch[1].scRing[(size_t)idx]);
+        }
+        re[(size_t)n] = x * win[(size_t)n];
+        im[(size_t)n] = d * win[(size_t)n];
       }
       fft.forward(re.data(), im.data());
 
@@ -275,11 +286,14 @@ private:
       }
     }
 
+    // pan: 0 = both sides, towards an edge = only that side (L/R or M/S)
+    const float pw[kMaxCh] = { params.pan > 0.f ? 1.f - params.pan : 1.f, params.pan < 0.f ? 1.f + params.pan : 1.f };
+
     // pass 2: apply gains, build Hermitian spectrum, inverse FFT, overlap-add
     for (int c = 0; c < nCh; ++c) {
       auto& s = ch[c];
       for (int k = 0; k < K; ++k) {
-        const float cutDb = depth * s.eff[(size_t)k] * bw[(size_t)k];
+        const float cutDb = depth * s.eff[(size_t)k] * bw[(size_t)k] * (nCh == 2 ? pw[c] : 1.f);
         const float g = std::exp(-cutDb * 0.11512925f);
         re[(size_t)k] = s.xr[(size_t)k] * g;
         im[(size_t)k] = -s.xi[(size_t)k] * g;  // conj for inverse-by-forward
@@ -291,10 +305,17 @@ private:
       im[0] = 0.f; im[N / 2] = 0.f;
       fft.forward(re.data(), im.data());
       const float scale = 0.5f / (float)N;   // sqrt-Hann^2 at 75% overlap sums to 2
-      for (int n = 0; n < N; ++n) s.acc[(size_t)n] += re[(size_t)n] * win[(size_t)n] * scale;
-
+      for (int n = 0; n < N; ++n) tmp[c][(size_t)n] = re[(size_t)n] * win[(size_t)n] * scale;
+    }
+    if (msMode)
+      for (int n = 0; n < N; ++n) {
+        const float m = tmp[0][(size_t)n], sd = tmp[1][(size_t)n];
+        tmp[0][(size_t)n] = m + sd; tmp[1][(size_t)n] = m - sd;
+      }
+    for (int c = 0; c < nCh; ++c) {
+      auto& s = ch[c];
+      for (int n = 0; n < N; ++n) s.acc[(size_t)n] += tmp[c][(size_t)n];
       if (c == 0) publishDisplay(norm, depth);
-
       std::copy(s.acc.begin(), s.acc.begin() + HOP, s.outReady.begin());
       std::memmove(s.acc.data(), s.acc.data() + HOP, sizeof(float) * (N - HOP));
       std::fill(s.acc.begin() + (N - HOP), s.acc.end(), 0.f);
@@ -322,7 +343,7 @@ private:
   SpacerParams params;
   FFT fft;
   Chan ch[kMaxCh];
-  std::vector<float> win, re, im, P, cum, bw;
+  std::vector<float> win, re, im, P, cum, bw, tmp[kMaxCh];
   int wpos = 0, hopCount = 0;
   float mix = 0.f, mixStep = 0.002f;
   bool bandDirty = true, hasSc = false;

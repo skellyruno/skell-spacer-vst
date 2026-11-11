@@ -7,12 +7,6 @@ else()
   FetchContent_Declare(JUCE GIT_REPOSITORY https://github.com/juce-framework/JUCE.git GIT_TAG 8.0.12 GIT_SHALLOW TRUE)
   FetchContent_MakeAvailable(JUCE)
 endif()
-# Pin the shared low-latency code at an immutable, tested SkellCore commit.
-FetchContent_Declare(SkellCoreShared
-  GIT_REPOSITORY https://github.com/skellyruno/skell-vst-template.git
-  GIT_TAG 4c05e29cb0d8b30bf25a0aa857c0c71e86f2da87
-  SOURCE_SUBDIR SkellCore)
-FetchContent_MakeAvailable(SkellCoreShared)
 
 juce_add_plugin(SkellSpacer
   COMPANY_NAME "Skell Audio"
@@ -27,8 +21,8 @@ juce_add_plugin(SkellSpacer
   IS_MIDI_EFFECT FALSE
   COPY_PLUGIN_AFTER_BUILD FALSE)
 juce_generate_juce_header(SkellSpacer)
-target_sources(SkellSpacer PRIVATE Source/PluginProcessor.cpp Source/PluginProcessor.h Source/PluginEditor.cpp Source/PluginEditor.h Source/SpacerDSP.h Source/SkellTheme.h)
+target_sources(SkellSpacer PRIVATE Source/PluginProcessor.cpp Source/PluginProcessor.h Source/PluginEditor.cpp Source/PluginEditor.h Source/SpacerDSP.h Source/ZeroLatencyEngine.h Source/SkellTheme.h)
 target_compile_features(SkellSpacer PRIVATE cxx_std_17)
 target_compile_definitions(SkellSpacer PUBLIC JUCE_VST3_CAN_REPLACE_VST2=0)
 target_compile_definitions(SkellSpacer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
-target_link_libraries(SkellSpacer PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra SkellCore::DSP)
+target_link_libraries(SkellSpacer PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)

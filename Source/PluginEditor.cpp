@@ -25,7 +25,8 @@ void SkellLookAndFeel::drawRotarySlider(juce::Graphics& g, int x, int y, int w, 
 
   juce::Path track, value;
   track.addCentredArc(c.x, c.y, arcR, arcR, 0, start, end, true);
-  value.addCentredArc(c.x, c.y, arcR, arcR, 0, start, ang, true);
+  const float from = s.getMinimum() < 0.0 ? 0.5f * (start + end) : start;   // bipolar knobs fill from centre
+  value.addCentredArc(c.x, c.y, arcR, arcR, 0, from, ang, true);
   g.setColour(kLine);
   g.strokePath(track, juce::PathStrokeType(thick));
   g.setColour(kAccent);
@@ -80,6 +81,13 @@ void SkellLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& but
     }
     return;
   }
+  if (button.getComponentID() == "labelbutton") {      // text is drawn by the editor; just show it is clickable
+    if (highlighted || down) {
+      g.setColour(kAccent.withAlpha(down ? 0.28f : 0.16f));
+      g.drawRect(button.getLocalBounds().toFloat().reduced(0.5f), 1.0f);
+    }
+    return;
+  }
   auto r = button.getLocalBounds().toFloat().reduced(0.5f);
   auto fill = kPanelHi;
   if (down) fill = kBtnDown; else if (highlighted) fill = kBtnHover;
@@ -96,7 +104,7 @@ juce::Font SkellLookAndFeel::getTextButtonFont(juce::TextButton&, int buttonHeig
 
 void SkellLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool) {
   sync();
-  if (button.getComponentID() == "logo") return;
+  if (button.getComponentID() == "logo" || button.getComponentID() == "labelbutton") return;
   g.setColour(button.getToggleState() ? kOnAccent : (button.isMouseOver() ? kAccent : kBone));
   g.setFont(getTextButtonFont(button, button.getHeight()));
   g.drawFittedText(button.getButtonText().toUpperCase(), button.getLocalBounds().reduced(4, 1),
@@ -220,9 +228,10 @@ void SpectrumView::paint(juce::Graphics& g) {
 SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
  : AudioProcessorEditor(&p), proc(p), spectrum(p),
    amountA(p.parameters, "amount", amount), smoothA(p.parameters, "smooth", smooth), linkA(p.parameters, "link", link),
+   panA(p.parameters, "pan", pan),
    attackA(p.parameters, "attack", attack), releaseA(p.parameters, "release", release),
    freezeA(p.parameters, "freeze", freeze), powerA(p.parameters, "power", power),
-    liveA(p.parameters, "liveMode", live),
+    liveA(p.parameters, "liveMode", live), msA(p.parameters, "ms", msToggle),
    lowParam(p.parameters.getParameter("lowcut")), highParam(p.parameters.getParameter("highcut")),
    lowA(*lowParam, [this](float) { bandChanged(); }),
    highA(*highParam, [this](float) { bandChanged(); }) {
@@ -237,7 +246,7 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   setResizeLimits(defaultWidth * 4 / 5, defaultHeight * 4 / 5, defaultWidth * 2, defaultHeight * 2);
   if (auto* c = getConstrainer()) c->setFixedAspectRatio((double) designWidth / (double) designHeight);
 
-  for (auto* s : { &amount, &smooth, &link, &attack, &release }) {
+  for (auto* s : { &amount, &smooth, &link, &pan, &attack, &release }) {
     s->setLookAndFeel(look.get());
     s->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
     s->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -290,9 +299,19 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   }
   freeze.setTooltip("Hold the current cut shape, even after the sidechain stops");
   power.setTooltip("Crossfade between processed and correctly aligned dry audio");
-  live.setTooltip("Live Tracking: causal 10-band sidechain engine, zero added samples. "
-                  "Studio keeps the existing high-resolution FFT sound. "
+  live.setTooltip("Live: zero-latency engine (60 bands, no lookahead). "
+                  "Studio: higher-resolution FFT engine with added latency. "
                   "Stop DAW playback to apply a new latency mode.");
+  link.setTooltip("Stereo Link: 0% = each side ducks on its own sidechain, 100% = both sides duck by the deeper cut");
+  pan.setTooltip("Pan: where the ducking is applied. Centre = both sides; left/right = only that side "
+                 "(in M/S mode: left = Mid only, right = Side only)");
+  msToggle.setTooltip("Switch Pan between Left/Right and Mid/Side");
+  msToggle.setLookAndFeel(look.get());
+  msToggle.setComponentID("labelbutton");
+  msToggle.setClickingTogglesState(true);
+  msToggle.setWantsKeyboardFocus(false);
+  msToggle.onStateChange = [this] { repaintDesign({ 14.0f, 336.0f, 522.0f, 16.0f }); };
+  addAndMakeVisible(msToggle);
 
 
   skinButton.setLookAndFeel(look.get());
@@ -317,7 +336,7 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
 
 SkellAudioProcessorEditor::~SkellAudioProcessorEditor() {
   stopTimer();
-  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &link, &attack, &release, &band, &freeze, &power, &live, &skinButton })
+  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &link, &pan, &attack, &release, &band, &freeze, &power, &live, &msToggle, &skinButton })
     c->setLookAndFeel(nullptr);
 }
 
@@ -337,6 +356,7 @@ void SkellAudioProcessorEditor::timerCallback() {
   if (a != scActive) scActive = a;
   repaintDesign({ 0.0f, 48.0f, (float) designWidth, 14.0f });     // header meter
   repaintDesign({ 200.0f, 68.0f, 330.0f, 18.0f });               // status line
+  repaintDesign({ 14.0f, 336.0f, 522.0f, 16.0f });               // knob labels (pan mode)
 }
 
 void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
@@ -377,12 +397,14 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
 
   // controls card
   drawCard(g, { 14.0f, 256.0f, 522.0f, 104.0f });
-  const float cellW = 522.0f / 5.0f;
-  const char* names[5] = { "AMOUNT", "SMOOTH", "LINK", "ATTACK", "RELEASE" };
-  for (int i = 0; i < 5; ++i)
+  const float cellW = 522.0f / 6.0f;
+  const bool msOn = proc.parameters.getRawParameterValue("ms")->load() > 0.5f;
+  const juce::String panName = msOn ? "PAN  M / S" : "PAN  L / R";
+  const char* names[6] = { "AMOUNT", "SMOOTH", "LINK", panName.toRawUTF8(), "ATTACK", "RELEASE" };
+  for (int i = 0; i < 6; ++i)
     drawText(g, names[i], { 14.0f + cellW * (float) i, 336.0f, cellW, 16.0f }, 10.5f, true, kBoneDim, juce::Justification::centred, 0.2f);
   g.setColour(kLine);
-  for (int i = 1; i < 5; ++i) g.fillRect(14.0f + cellW * (float) i, 268.0f, 1.0f, 80.0f);
+  for (int i = 1; i < 6; ++i) g.fillRect(14.0f + cellW * (float) i, 268.0f, 1.0f, 80.0f);
 
   // band card
   drawCard(g, { 14.0f, 368.0f, 522.0f, 70.0f });
@@ -405,9 +427,10 @@ void SkellAudioProcessorEditor::resized() {
   freeze.setBounds(fit(342.0f, 16.0f, 100.0f, 24.0f));
   power.setBounds(fit(448.0f, 16.0f, 88.0f, 24.0f));
   spectrum.setBounds(fit(28.0f, 90.0f, 494.0f, 152.0f));
-  const float cellW = 522.0f / 5.0f, kd = 62.0f;
-  juce::Slider* knobs[5] = { &amount, &smooth, &link, &attack, &release };
-  for (int i = 0; i < 5; ++i)
+  const float cellW = 522.0f / 6.0f, kd = 62.0f;
+  juce::Slider* knobs[6] = { &amount, &smooth, &link, &pan, &attack, &release };
+  for (int i = 0; i < 6; ++i)
     knobs[i]->setBounds(fit(14.0f + cellW * ((float) i + 0.5f) - kd * 0.5f, 270.0f, kd, kd));
+  msToggle.setBounds(fit(14.0f + cellW * 3.0f + 4.0f, 334.0f, cellW - 8.0f, 20.0f));
   band.setBounds(fit(26.0f, 392.0f, 498.0f, 34.0f));
 }

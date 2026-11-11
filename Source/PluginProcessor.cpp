@@ -34,6 +34,8 @@ SkellAudioProcessor::SkellAudioProcessor()
   pFreeze = parameters.getRawParameterValue("freeze");
   pPower = parameters.getRawParameterValue("power");
   pLive = parameters.getRawParameterValue("liveMode");
+  pPan = parameters.getRawParameterValue("pan");
+  pMs = parameters.getRawParameterValue("ms");
   setLatencySamples(engine.latencySamples());
 }
 
@@ -71,10 +73,15 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
 
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"freeze", 1}, "Freeze", false));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"power", 1}, "Power", true));
-  // Existing projects default to the original Studio FFT algorithm.
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"pan", 1}, "Pan",
+    juce::NormalisableRange<float>(-100.0f, 100.0f, 0.1f), 0.0f,
+    AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction([](float v, int) {
+      const int r = juce::roundToInt(v); return r == 0 ? juce::String("C") : juce::String(std::abs(r)) + (r < 0 ? " L" : " R"); })));
+  layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"ms", 1}, "Mid/Side", false));
+  // Live = zero-latency engine (the default, like Trackspacer); Studio = FFT engine with N samples of latency.
   // Latency modes are lifecycle configuration, not per-sample effect automation.
   layout.add(std::make_unique<juce::AudioParameterBool>(
-    juce::ParameterID{"liveMode", 1}, "Live Tracking", false));
+    juce::ParameterID{"liveMode", 1}, "Live Tracking", true));
   return layout;
 }
 
@@ -113,27 +120,8 @@ void SkellAudioProcessor::applyRequestedModeIfStopped() {
 
 void SkellAudioProcessor::readSpectrum(float* mainDb, float* sideDb, float* cutDb) const {
   if (!mainDb || !sideDb || !cutDb) return;
-  if (!isLiveActive()) {
-    engine.getDisplay(mainDb, sideDb, cutDb);
-    return;
-  }
-  constexpr int bins = skell::SpacerEngine::kDisp;
-  constexpr int bands = skellcore::live::LiveMultibandDucker::bands;
-  float m[bands]{}, s[bands]{}, c[bands]{};
-  liveEngine.copyDisplayBands(0,m,s,c);
-  const auto& centres = skellcore::live::LiveMultibandDucker::centreHz;
-  for (int i=0; i<bins; ++i) {
-    const float f = 20.f*std::pow(1000.f, static_cast<float>(i)/(bins-1));
-    int upper=1;
-    while (upper<bands-1 && f>centres[static_cast<std::size_t>(upper)]) ++upper;
-    const int lower=upper-1;
-    const float start=std::log(centres[static_cast<std::size_t>(lower)]);
-    const float span=std::log(centres[static_cast<std::size_t>(upper)])-start;
-    const float t=juce::jlimit(0.f,1.f,(std::log(f)-start)/span);
-    mainDb[i]=m[lower]+(m[upper]-m[lower])*t;
-    sideDb[i]=s[lower]+(s[upper]-s[lower])*t;
-    cutDb[i]=c[lower]+(c[upper]-c[lower])*t;
-  }
+  if (isLiveActive()) liveEngine.getDisplay(mainDb, sideDb, cutDb);
+  else engine.getDisplay(mainDb, sideDb, cutDb);
 }
 
 bool SkellAudioProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
@@ -167,21 +155,10 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.highHz = pHigh->load();
   p.freeze = pFreeze->load() > 0.5f;
   p.power = pPower->load() > 0.5f;
+  p.pan = pPan->load();
+  p.ms = pMs->load() > 0.5f;
   const bool live = liveActive_.load(std::memory_order_acquire);
-  if (!live) engine.setParams(p);
-  else {
-    skellcore::live::LiveDuckerParams liveParams;
-    liveParams.amount = p.amount;
-    liveParams.smooth = p.smooth;
-    liveParams.stereoLink = p.link;
-    liveParams.attackMs = p.attackMs;
-    liveParams.releaseMs = p.releaseMs;
-    liveParams.lowHz = p.lowHz;
-    liveParams.highHz = p.highHz;
-    liveParams.freeze = p.freeze;
-    liveParams.enabled = p.power;
-    liveEngine.setParameters(liveParams);
-  }
+  if (live) liveEngine.setParams(p); else engine.setParams(p);
 
   auto mainBuf = getBusBuffer(buffer, true, 0);
   float* mainPtrs[2] = { nullptr, nullptr };
