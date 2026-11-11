@@ -54,6 +54,7 @@ private:
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};
   std::atomic<bool> liveActive_{false}, prepared_{false}, transportPlaying_{false};
+  std::atomic<juce::uint32> lastCallbackTick_{0};
   int sidechainHold = 0;
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SkellAudioProcessor)
 };
