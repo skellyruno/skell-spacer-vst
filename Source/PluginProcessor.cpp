@@ -85,6 +85,7 @@ void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
   sampleRateHz.store(sampleRate);
   sidechainHold = 0;
   sidechainActive.store(false);
+  lastCallbackTick_.store(0, std::memory_order_relaxed);
   // The active engine and the reported host delay are published together at
   // preparation. Never change JUCE host PDC from processBlock.
   const bool requested = pLive != nullptr && pLive->load() > 0.5f;
@@ -96,8 +97,14 @@ void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
 void SkellAudioProcessor::applyRequestedModeIfStopped() {
   // Called ONLY on the JUCE message thread by the editor timer, or while
   // initializing. A playing transport defers the PDC mode change.
-  if (!prepared_.load(std::memory_order_acquire) ||
-      transportPlaying_.load(std::memory_order_acquire) || pLive == nullptr) return;
+  if (!prepared_.load(std::memory_order_acquire) || pLive == nullptr) return;
+  // Hosts sometimes stop processBlock entirely when transport stops, leaving
+  // the last observed playing flag stale. Only treat it as playing when
+  // callbacks are still arriving. Tick wrap is safe with unsigned arithmetic.
+  const auto last = lastCallbackTick_.load(std::memory_order_relaxed);
+  const bool callbacksRecent = last != 0 &&
+      (juce::Time::getMillisecondCounter() - last) < 150u;
+  if (callbacksRecent && transportPlaying_.load(std::memory_order_acquire)) return;
   const bool requested = pLive->load(std::memory_order_relaxed) > 0.5f;
   if (requested == liveActive_.load(std::memory_order_acquire)) return;
   setLatencySamples(requested ? liveEngine.latencySamples() : engine.latencySamples());
@@ -139,6 +146,7 @@ bool SkellAudioProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
 
 void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) {
   juce::ScopedNoDenormals guard;
+  lastCallbackTick_.store(juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
   // Host playback state is observed on the audio callback without publishing PDC
   // or changing processor topology there. Unknown state permits a stopped-mode
   // change; hosts that expose playback state prevent active transport switching.
