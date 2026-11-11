@@ -222,6 +222,7 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
    amountA(p.parameters, "amount", amount), smoothA(p.parameters, "smooth", smooth), linkA(p.parameters, "link", link),
    attackA(p.parameters, "attack", attack), releaseA(p.parameters, "release", release),
    freezeA(p.parameters, "freeze", freeze), powerA(p.parameters, "power", power),
+    liveA(p.parameters, "liveMode", live),
    lowParam(p.parameters.getParameter("lowcut")), highParam(p.parameters.getParameter("highcut")),
    lowA(*lowParam, [this](float) { bandChanged(); }),
    highA(*highParam, [this](float) { bandChanged(); }) {
