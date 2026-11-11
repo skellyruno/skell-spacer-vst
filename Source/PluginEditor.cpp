@@ -105,7 +105,7 @@ void SkellLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& butto
 
 // ---------------------------------------------------------------- spectrum
 void SpectrumView::tick() {
-  proc.getEngine().getDisplay(mainDb, scDb, cutDb);
+  proc.readSpectrum(mainDb, scDb, cutDb);
   float pk = 0.0f;
   for (int i = 0; i < N; ++i) {
     if (!primed) { sMain[i] = mainDb[i]; sSc[i] = scDb[i]; sCut[i] = cutDb[i]; }
@@ -281,14 +281,18 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   };
   addAndMakeVisible(band);
 
-  for (auto* b : { &freeze, &power }) {
+  for (auto* b : { &freeze, &power, &live }) {
     b->setLookAndFeel(look.get());
     b->setClickingTogglesState(true);
     b->setWantsKeyboardFocus(false);
     addAndMakeVisible(*b);
   }
   freeze.setTooltip("Hold the current cut shape, even after the sidechain stops");
-  power.setTooltip("Crossfade between the processed and the (delayed) dry signal");
+  power.setTooltip("Crossfade between processed and correctly aligned dry audio");
+  live.setTooltip("Live Tracking: causal 10-band sidechain engine, zero added samples. "
+                  "Studio keeps the existing high-resolution FFT sound. "
+                  "Stop DAW playback to apply a new latency mode.");
+
 
   skinButton.setLookAndFeel(look.get());
   skinButton.setComponentID("logo");
@@ -312,7 +316,7 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
 
 SkellAudioProcessorEditor::~SkellAudioProcessorEditor() {
   stopTimer();
-  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &link, &attack, &release, &band, &freeze, &power, &skinButton })
+  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &link, &attack, &release, &band, &freeze, &power, &live, &skinButton })
     c->setLookAndFeel(nullptr);
 }
 
@@ -326,6 +330,7 @@ void SkellAudioProcessorEditor::bandChanged() {
 }
 
 void SkellAudioProcessorEditor::timerCallback() {
+  proc.applyRequestedModeIfStopped(); // message-thread-only host PDC change
   spectrum.tick();
   const bool a = proc.isSidechainActive();
   if (a != scActive) scActive = a;
@@ -340,8 +345,8 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
 
   // header
   drawSpacerMark(g, 16.0f, 11.0f, kBone, kAccent, kBg);
-  drawText(g, "SKELL SPACER", { 100.0f, 9.0f, 240.0f, 26.0f }, 21.0f, true, kBone, juce::Justification::centredLeft, 0.16f);
-  drawText(g, "SPACE   /   DUCK   /   SIDECHAIN", { 101.0f, 33.0f, 240.0f, 14.0f }, 10.0f, false, kBoneDim,
+  drawText(g, "SKELL SPACER", { 100.0f, 9.0f, 169.0f, 26.0f }, 19.0f, true, kBone, juce::Justification::centredLeft, 0.16f);
+  drawText(g, "SPACE / DUCK / SIDECHAIN", { 101.0f, 33.0f, 172.0f, 14.0f }, 10.0f, false, kBoneDim,
            juce::Justification::centredLeft, 0.18f);
 
   // header strip: segments light with the deepest cut (gain reduction)
@@ -361,8 +366,10 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
   // spectrum card
   drawCard(g, { 14.0f, 66.0f, 522.0f, 184.0f });
   drawText(g, "SPECTRUM", { 30.0f, 72.0f, 120.0f, 14.0f }, 10.5f, true, kBoneDim, juce::Justification::centredLeft, 0.2f);
-  const auto status = scActive ? juce::String("SIDECHAIN OK") : juce::String("NO SIDECHAIN");
-  drawText(g, status, { 330.0f, 72.0f, 192.0f, 14.0f }, 10.5f, true, scActive ? kAccent : kWarn, juce::Justification::centredRight, 0.2f);
+  const auto status = proc.isLivePending()
+      ? juce::String("STOP TO APPLY MODE")
+      : (scActive ? juce::String("SIDECHAIN OK") : juce::String("NO SIDECHAIN"));
+  drawText(g, status, { 330.0f, 72.0f, 192.0f, 14.0f }, 10.5f, true, proc.isLivePending() ? kWarn : (scActive ? kAccent : kWarn), juce::Justification::centredRight, 0.2f);
   drawText(g, juce::String(proc.getCurrentSampleRate() / 1000.0, 1) + " kHz   /   "
               + juce::String(proc.getLatencySamples()) + " smp latency",
            { 150.0f, 72.0f, 190.0f, 14.0f }, 10.0f, false, kBoneDim, juce::Justification::centredLeft, 0.1f);
@@ -393,6 +400,7 @@ void SkellAudioProcessorEditor::resized() {
     return juce::Rectangle<int>(juce::roundToInt(x * s), juce::roundToInt(y * s), juce::roundToInt(w * s), juce::roundToInt(h * s));
   };
   skinButton.setBounds(fit(10.0f, 6.0f, 84.0f, 38.0f));
+  live.setBounds(fit(273.0f, 16.0f, 64.0f, 24.0f));
   freeze.setBounds(fit(342.0f, 16.0f, 100.0f, 24.0f));
   power.setBounds(fit(448.0f, 16.0f, 88.0f, 24.0f));
   spectrum.setBounds(fit(28.0f, 90.0f, 494.0f, 152.0f));
