@@ -33,6 +33,7 @@ SkellAudioProcessor::SkellAudioProcessor()
   pHigh = parameters.getRawParameterValue("highcut");
   pFreeze = parameters.getRawParameterValue("freeze");
   pPower = parameters.getRawParameterValue("power");
+  pLive = parameters.getRawParameterValue("liveMode");
   setLatencySamples(engine.latencySamples());
 }
 
@@ -70,15 +71,69 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
 
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"freeze", 1}, "Freeze", false));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"power", 1}, "Power", true));
+  // Existing projects default to the original Studio FFT algorithm.
+  // Latency modes are lifecycle configuration, not per-sample effect automation.
+  layout.add(std::make_unique<juce::AudioParameterBool>(
+    juce::ParameterID{"liveMode", 1}, "Live Tracking", false));
   return layout;
 }
 
 void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
+  prepared_.store(false, std::memory_order_release);
   engine.prepare(sampleRate);
+  liveEngine.prepare(sampleRate);
   sampleRateHz.store(sampleRate);
   sidechainHold = 0;
   sidechainActive.store(false);
-  setLatencySamples(engine.latencySamples());
+  lastCallbackTick_.store(0, std::memory_order_relaxed);
+  // The active engine and the reported host delay are published together at
+  // preparation. Never change JUCE host PDC from processBlock.
+  const bool requested = pLive != nullptr && pLive->load() > 0.5f;
+  setLatencySamples(requested ? liveEngine.latencySamples() : engine.latencySamples());
+  liveActive_.store(requested, std::memory_order_release);
+  prepared_.store(true, std::memory_order_release);
+}
+
+void SkellAudioProcessor::applyRequestedModeIfStopped() {
+  // Called ONLY on the JUCE message thread by the editor timer, or while
+  // initializing. A playing transport defers the PDC mode change.
+  if (!prepared_.load(std::memory_order_acquire) || pLive == nullptr) return;
+  // Hosts sometimes stop processBlock entirely when transport stops, leaving
+  // the last observed playing flag stale. Only treat it as playing when
+  // callbacks are still arriving. Tick wrap is safe with unsigned arithmetic.
+  const auto last = lastCallbackTick_.load(std::memory_order_relaxed);
+  const bool callbacksRecent = last != 0 &&
+      (juce::Time::getMillisecondCounter() - last) < 150u;
+  if (callbacksRecent && transportPlaying_.load(std::memory_order_acquire)) return;
+  const bool requested = pLive->load(std::memory_order_relaxed) > 0.5f;
+  if (requested == liveActive_.load(std::memory_order_acquire)) return;
+  setLatencySamples(requested ? liveEngine.latencySamples() : engine.latencySamples());
+  liveActive_.store(requested, std::memory_order_release);
+}
+
+void SkellAudioProcessor::readSpectrum(float* mainDb, float* sideDb, float* cutDb) const {
+  if (!mainDb || !sideDb || !cutDb) return;
+  if (!isLiveActive()) {
+    engine.getDisplay(mainDb, sideDb, cutDb);
+    return;
+  }
+  constexpr int bins = skell::SpacerEngine::kDisp;
+  constexpr int bands = skellcore::live::LiveMultibandDucker::bands;
+  float m[bands]{}, s[bands]{}, c[bands]{};
+  liveEngine.copyDisplayBands(0,m,s,c);
+  const auto& centres = skellcore::live::LiveMultibandDucker::centreHz;
+  for (int i=0; i<bins; ++i) {
+    const float f = 20.f*std::pow(1000.f, static_cast<float>(i)/(bins-1));
+    int upper=1;
+    while (upper<bands-1 && f>centres[static_cast<std::size_t>(upper)]) ++upper;
+    const int lower=upper-1;
+    const float start=std::log(centres[static_cast<std::size_t>(lower)]);
+    const float span=std::log(centres[static_cast<std::size_t>(upper)])-start;
+    const float t=juce::jlimit(0.f,1.f,(std::log(f)-start)/span);
+    mainDb[i]=m[lower]+(m[upper]-m[lower])*t;
+    sideDb[i]=s[lower]+(s[upper]-s[lower])*t;
+    cutDb[i]=c[lower]+(c[upper]-c[lower])*t;
+  }
 }
 
 bool SkellAudioProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
@@ -91,6 +146,16 @@ bool SkellAudioProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
 
 void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) {
   juce::ScopedNoDenormals guard;
+  lastCallbackTick_.store(juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
+  // Host playback state is observed on the audio callback without publishing PDC
+  // or changing processor topology there. Unknown state permits a stopped-mode
+  // change; hosts that expose playback state prevent active transport switching.
+  bool isPlaying = false;
+  if (auto* playhead = getPlayHead()) {
+    if (auto position = playhead->getPosition())
+      isPlaying = position->getIsPlaying();
+  }
+  transportPlaying_.store(isPlaying, std::memory_order_release);
 
   skell::SpacerParams p;
   p.amount = pAmount->load() * 0.01f;
@@ -102,7 +167,21 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.highHz = pHigh->load();
   p.freeze = pFreeze->load() > 0.5f;
   p.power = pPower->load() > 0.5f;
-  engine.setParams(p);
+  const bool live = liveActive_.load(std::memory_order_acquire);
+  if (!live) engine.setParams(p);
+  else {
+    skellcore::live::LiveDuckerParams liveParams;
+    liveParams.amount = p.amount;
+    liveParams.smooth = p.smooth;
+    liveParams.stereoLink = p.link;
+    liveParams.attackMs = p.attackMs;
+    liveParams.releaseMs = p.releaseMs;
+    liveParams.lowHz = p.lowHz;
+    liveParams.highHz = p.highHz;
+    liveParams.freeze = p.freeze;
+    liveParams.enabled = p.power;
+    liveEngine.setParameters(liveParams);
+  }
 
   auto mainBuf = getBusBuffer(buffer, true, 0);
   float* mainPtrs[2] = { nullptr, nullptr };
@@ -126,7 +205,8 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   else sidechainHold = juce::jmax(0, sidechainHold - n);
   sidechainActive.store(sidechainHold > 0, std::memory_order_relaxed);
 
-  engine.process(mainPtrs, scPtrs, nMain, nSc, n);
+  if (live) liveEngine.process(mainPtrs, scPtrs, nMain, nSc, n);
+  else engine.process(mainPtrs, scPtrs, nMain, nSc, n);
 }
 
 juce::AudioProcessorEditor* SkellAudioProcessor::createEditor() { return new SkellAudioProcessorEditor(*this); }

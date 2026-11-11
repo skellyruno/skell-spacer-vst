@@ -1,13 +1,14 @@
 #pragma once
 #include <JuceHeader.h>
 #include "SpacerDSP.h"
+#include <SkellCore/LiveEngine.h>
 
 class SkellAudioProcessor final : public juce::AudioProcessor {
 public:
   SkellAudioProcessor();
   void prepareToPlay(double sampleRate, int samplesPerBlock) override;
-  void releaseResources() override {}
-  void reset() override { engine.reset(); }
+  void releaseResources() override { prepared_.store(false, std::memory_order_relaxed); }
+  void reset() override { engine.reset(); liveEngine.reset(); }
   bool isBusesLayoutSupported(const BusesLayout& l) const override;
   void processBlock(juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
   juce::AudioProcessorEditor* createEditor() override;
@@ -26,6 +27,15 @@ public:
   void setStateInformation(const void*, int) override;
 
   const skell::SpacerEngine& getEngine() const { return engine; }
+  // Live is an opt-in, different-sounding zero-added-sample-delay path.
+  // Plugin PDC can only be switched on a safe non-audio thread, with the host stopped.
+  bool isLiveActive() const noexcept { return liveActive_.load(std::memory_order_relaxed); }
+  bool isLivePending() const noexcept {
+    return pLive != nullptr &&
+      ((pLive->load(std::memory_order_relaxed) > 0.5f) != isLiveActive());
+  }
+  void applyRequestedModeIfStopped(); // message thread ONLY
+  void readSpectrum(float* mainDb, float* sideDb, float* cutDb) const;
   bool isSidechainActive() const { return sidechainActive.load(std::memory_order_relaxed); }
   double getCurrentSampleRate() const { return sampleRateHz.load(std::memory_order_relaxed); }
 
@@ -38,10 +48,13 @@ public:
 
 private:
   skell::SpacerEngine engine;
-  std::atomic<float> *pAmount{}, *pSmooth{}, *pLink{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{};
+  skellcore::live::LiveMultibandDucker liveEngine;
+  std::atomic<float> *pAmount{}, *pSmooth{}, *pLink{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{}, *pLive{};
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};
+  std::atomic<bool> liveActive_{false}, prepared_{false}, transportPlaying_{false};
+  std::atomic<juce::uint32> lastCallbackTick_{0};
   int sidechainHold = 0;
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SkellAudioProcessor)
 };
