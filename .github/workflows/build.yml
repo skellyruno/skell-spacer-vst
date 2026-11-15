@@ -5,37 +5,109 @@ on:
     branches: [main]
   pull_request:
 
+# Re-run only superseded PR checks. Main branch and manual release builds are protected.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dsp-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: DSP tests (original Studio)
-        run: |
-          g++ -O2 -std=c++17 -I Source tests/dsp_test.cpp -o dsp_test
-          ./dsp_test
-      - name: DSP tests (zero-latency Live engine)
+      - name: Verify compatibility parameter IDs
+        run: python3 tests/parameter_contract_test.py
+      - name: DSP tests (zero-latency engine)
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/live_dsp_test.cpp -o live_dsp_test
           ./live_dsp_test
+      - name: Concurrent realtime and display snapshot regression
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -pthread -I Source tests/display_rt_test.cpp -o display_rt_test
+          ./display_rt_test
+      - name: Stress test
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/stress_test.cpp -o stress_test
+          ./stress_test
+      - name: Zero-allocation audio callback regression
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/realtime_allocation_test.cpp -o realtime_allocation_test
+          ./realtime_allocation_test
   build:
     runs-on: windows-latest
     needs: dsp-tests
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -A x64
+        run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build --config Release --parallel 2
       - name: Package
         shell: pwsh
         run: |
-          $plugin = Get-ChildItem -Path build -Directory -Recurse -Filter '*.vst3' | Select-Object -First 1
-          if (-not $plugin) { throw 'VST3 bundle missing' }
-          Compress-Archive -Path $plugin.FullName -DestinationPath skell-spacer-vst-Windows-VST3.zip
+          $plugin = 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3'
+          if (-not (Test-Path $plugin)) {
+            Get-ChildItem -Path build -Recurse -Filter '*.vst3' | ForEach-Object FullName
+            throw 'VST3 bundle missing'
+          }
+          if (-not (Test-Path "$plugin/Contents/x86_64-win/Skell Spacer.vst3")) { throw 'VST3 binary missing inside the bundle' }
+          Compress-Archive -Path $plugin -DestinationPath skell-spacer-vst-Windows-VST3.zip
       - uses: actions/upload-artifact@v4
         with:
-          retention-days: 1
+          retention-days: 7
           name: skell-spacer-vst-Windows-VST3
           path: skell-spacer-vst-Windows-VST3.zip
           if-no-files-found: error
+
+      # Release-candidate-only real JUCE editor audit (not an everyday screenshot workflow).
+      # Not executed on main, release, production or manual builds.
+      - name: Build actual JUCE editor audit
+        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        run: cmake --build build --config Release --target SkellSpacerUIAudit SkellSpacerUIStress --parallel 2
+      - name: Render real editor and exercise controls
+        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Compiled JUCE UI audit executable missing' }
+          New-Item -ItemType Directory -Force -Path ui-audit | Out-Null
+          & $exe.FullName ui-audit
+          if ($LASTEXITCODE -ne 0) { throw "Real editor UI audit failed ($LASTEXITCODE)" }
+          $stress = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIStress.exe' | Select-Object -First 1
+          if (-not $stress) { throw 'Compiled JUCE editor stress executable missing' }
+          & $stress.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Real editor stress test failed ($LASTEXITCODE)" }
+          $screens = @(Get-ChildItem ui-audit -Filter '*.png')
+          if ($screens.Count -lt 15) { throw "Expected 15+ actual editor screenshots; got $($screens.Count)" }
+      - uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        with:
+          retention-days: 7
+          name: SkellSpacer-V16-Real-Editor-Audit
+          path: ui-audit/*.png
+          if-no-files-found: warn
+      # Host-style check (load, bus layouts, state save/restore, automation, parameter fuzzing, threading).
+      # Runs after the upload so a validator failure never hides the build; the run just goes red.
+      - name: Validate with pluginval
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+          # pluginval_Windows.zip supplies a GUI-subsystem executable. Direct PowerShell
+          # invocation can return before it exits, leaving $LASTEXITCODE unset and
+          # marking a successful validation as failed. Explicitly wait and read ExitCode.
+          $validator = (Resolve-Path './pluginval/pluginval.exe').Path
+          $vst3 = (Resolve-Path 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3').Path
+          New-Item -ItemType Directory -Force -Path pluginval-log | Out-Null
+          $logDir = (Resolve-Path './pluginval-log').Path
+          $arguments = "--strictness-level 5 --validate-in-process --output-dir `"$logDir`" `"$vst3`""
+          $validation = Start-Process -FilePath $validator -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+          if ($null -eq $validation.ExitCode) { throw 'pluginval finished without an exit code' }
+          if ($validation.ExitCode -ne 0) { throw "pluginval failed ($($validation.ExitCode))" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          retention-days: 7
+          name: pluginval-log
+          path: pluginval-log
+          if-no-files-found: ignore

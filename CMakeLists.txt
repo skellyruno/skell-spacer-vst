@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
-project(SkellSpacer VERSION 1.0.0 LANGUAGES C CXX)
+# Static MSVC runtime: the VST3 then loads on a Windows machine without the Visual C++ redistributable installed.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+project(SkellSpacer VERSION 1.1.0 LANGUAGES C CXX)
 include(FetchContent)
 if(DEFINED JUCE_PATH AND EXISTS "${JUCE_PATH}/CMakeLists.txt")
   add_subdirectory("${JUCE_PATH}" JUCE)
@@ -14,6 +16,7 @@ juce_add_plugin(SkellSpacer
   PLUGIN_MANUFACTURER_CODE SkAu
   PLUGIN_CODE Sk02
   FORMATS VST3
+  VST3_CATEGORIES Fx
   PRODUCT_NAME "Skell Spacer"
   IS_SYNTH FALSE
   NEEDS_MIDI_INPUT FALSE
@@ -26,3 +29,36 @@ target_compile_features(SkellSpacer PRIVATE cxx_std_17)
 target_compile_definitions(SkellSpacer PUBLIC JUCE_VST3_CAN_REPLACE_VST2=0)
 target_compile_definitions(SkellSpacer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(SkellSpacer PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)
+
+# Optional, real JUCE editor audit. Excluded from normal production VST3 builds.
+option(SKELL_ENABLE_EDITOR_AUDIT "Build real JUCE editor screenshot/control audit" OFF)
+if(SKELL_ENABLE_EDITOR_AUDIT)
+  juce_add_console_app(SkellSpacerUIAudit PRODUCT_NAME "SkellSpacerUIAudit")
+  juce_generate_juce_header(SkellSpacerUIAudit)
+  target_sources(SkellSpacerUIAudit PRIVATE
+    tests/ui_render.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.h Source/PluginEditor.h
+    Source/SpacerDSP.h Source/ZeroLatencyEngine.h Source/SkellTheme.h)
+  target_include_directories(SkellSpacerUIAudit PRIVATE Source)
+  target_compile_features(SkellSpacerUIAudit PRIVATE cxx_std_17)
+  target_compile_definitions(SkellSpacerUIAudit PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+    JucePlugin_VersionString=\"${PROJECT_VERSION}\")
+  target_link_libraries(SkellSpacerUIAudit PRIVATE
+    juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)
+
+  juce_add_console_app(SkellSpacerUIStress PRODUCT_NAME "SkellSpacerUIStress")
+  juce_generate_juce_header(SkellSpacerUIStress)
+  target_sources(SkellSpacerUIStress PRIVATE
+    tests/stress_ui.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.h Source/PluginEditor.h
+    Source/SpacerDSP.h Source/ZeroLatencyEngine.h Source/SkellTheme.h)
+  target_include_directories(SkellSpacerUIStress PRIVATE Source)
+  target_compile_features(SkellSpacerUIStress PRIVATE cxx_std_17)
+  target_compile_definitions(SkellSpacerUIStress PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+    JucePlugin_VersionString=\"${PROJECT_VERSION}\")
+  target_link_libraries(SkellSpacerUIStress PRIVATE
+    juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)
+endif()

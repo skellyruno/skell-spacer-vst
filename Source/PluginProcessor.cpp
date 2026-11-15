@@ -26,17 +26,18 @@ SkellAudioProcessor::SkellAudioProcessor()
    parameters(*this, nullptr, "PARAMETERS", createLayout()) {
   pAmount = parameters.getRawParameterValue("amount");
   pSmooth = parameters.getRawParameterValue("smooth");
-  pLink = parameters.getRawParameterValue("link");
   pAttack = parameters.getRawParameterValue("attack");
   pRelease = parameters.getRawParameterValue("release");
   pLow = parameters.getRawParameterValue("lowcut");
   pHigh = parameters.getRawParameterValue("highcut");
   pFreeze = parameters.getRawParameterValue("freeze");
   pPower = parameters.getRawParameterValue("power");
-  pLive = parameters.getRawParameterValue("liveMode");
   pPan = parameters.getRawParameterValue("pan");
   pMs = parameters.getRawParameterValue("ms");
-  setLatencySamples(engine.latencySamples());
+  pListen = parameters.getRawParameterValue("listen");
+  pScLow = parameters.getRawParameterValue("schp");
+  pScHigh = parameters.getRawParameterValue("sclp");
+  setLatencySamples(0);
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createLayout() {
@@ -49,10 +50,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
     AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"smooth", 1}, "Smooth",
     juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 30.0f,
-    AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
-
-  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"link", 1}, "Stereo Link",
-    juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 0.0f,
     AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
 
   juce::NormalisableRange<float> atk(1.0f, 200.0f, 0.1f);  atk.setSkewForCentre(20.0f);
@@ -71,57 +68,41 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
       .withStringFromValueFunction([](float v, int) { return freqText(v); })
       .withValueFromStringFunction([](const juce::String& t) { return freqFromText(t); })));
 
+  // sidechain filters: shape what the detector hears (20 Hz / 20 kHz = off), 24 dB/oct
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"schp", 1}, "Sidechain High-Pass", freqRange(), 20.0f,
+    AudioParameterFloatAttributes().withLabel("Hz")
+      .withStringFromValueFunction([](float v, int) { return v <= 20.5f ? juce::String("Off") : freqText(v); })
+      .withValueFromStringFunction([](const juce::String& t) { return t.trim().startsWithIgnoreCase("o") ? 20.0f : freqFromText(t); })));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"sclp", 1}, "Sidechain Low-Pass", freqRange(), 20000.0f,
+    AudioParameterFloatAttributes().withLabel("Hz")
+      .withStringFromValueFunction([](float v, int) { return v >= 19500.0f ? juce::String("Off") : freqText(v); })
+      .withValueFromStringFunction([](const juce::String& t) { return t.trim().startsWithIgnoreCase("o") ? 20000.0f : freqFromText(t); })));
+
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"freeze", 1}, "Freeze", false));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"power", 1}, "Power", true));
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"pan", 1}, "Pan",
     juce::NormalisableRange<float>(-100.0f, 100.0f, 0.1f), 0.0f,
     AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction([](float v, int) {
-      const int r = juce::roundToInt(v); return r == 0 ? juce::String("C") : juce::String(std::abs(r)) + (r < 0 ? " L" : " R"); })));
+      const int r = juce::roundToInt(v); return r == 0 ? juce::String("C") : juce::String(std::abs(r)) + (r < 0 ? " L" : " R"); })
+      .withValueFromStringFunction([](const juce::String& t) {
+        if (t.trim().startsWithIgnoreCase("c")) return 0.0f;
+        const float v = std::abs(t.getFloatValue());
+        return t.containsIgnoreCase("l") ? -v : v; })));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"ms", 1}, "Mid/Side", false));
-  // Live = zero-latency engine (the default, like Trackspacer); Studio = FFT engine with N samples of latency.
-  // Latency modes are lifecycle configuration, not per-sample effect automation.
-  layout.add(std::make_unique<juce::AudioParameterBool>(
-    juce::ParameterID{"liveMode", 1}, "Live Tracking", true));
+  layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"listen", 1}, "Listen", false));
   return layout;
 }
 
 void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
-  prepared_.store(false, std::memory_order_release);
   engine.prepare(sampleRate);
-  liveEngine.prepare(sampleRate);
   sampleRateHz.store(sampleRate);
   sidechainHold = 0;
   sidechainActive.store(false);
-  lastCallbackTick_.store(0, std::memory_order_relaxed);
-  // The active engine and the reported host delay are published together at
-  // preparation. Never change JUCE host PDC from processBlock.
-  const bool requested = pLive != nullptr && pLive->load() > 0.5f;
-  setLatencySamples(requested ? liveEngine.latencySamples() : engine.latencySamples());
-  liveActive_.store(requested, std::memory_order_release);
-  prepared_.store(true, std::memory_order_release);
-}
-
-void SkellAudioProcessor::applyRequestedModeIfStopped() {
-  // Called ONLY on the JUCE message thread by the editor timer, or while
-  // initializing. A playing transport defers the PDC mode change.
-  if (!prepared_.load(std::memory_order_acquire) || pLive == nullptr) return;
-  // Hosts sometimes stop processBlock entirely when transport stops, leaving
-  // the last observed playing flag stale. Only treat it as playing when
-  // callbacks are still arriving. Tick wrap is safe with unsigned arithmetic.
-  const auto last = lastCallbackTick_.load(std::memory_order_relaxed);
-  const bool callbacksRecent = last != 0 &&
-      (juce::Time::getMillisecondCounter() - last) < 150u;
-  if (callbacksRecent && transportPlaying_.load(std::memory_order_acquire)) return;
-  const bool requested = pLive->load(std::memory_order_relaxed) > 0.5f;
-  if (requested == liveActive_.load(std::memory_order_acquire)) return;
-  setLatencySamples(requested ? liveEngine.latencySamples() : engine.latencySamples());
-  liveActive_.store(requested, std::memory_order_release);
+  listenMix = 0.f;
 }
 
 void SkellAudioProcessor::readSpectrum(float* mainDb, float* sideDb, float* cutDb) const {
-  if (!mainDb || !sideDb || !cutDb) return;
-  if (isLiveActive()) liveEngine.getDisplay(mainDb, sideDb, cutDb);
-  else engine.getDisplay(mainDb, sideDb, cutDb);
+  if (mainDb && sideDb && cutDb) engine.getDisplay(mainDb, sideDb, cutDb);
 }
 
 bool SkellAudioProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
@@ -134,31 +115,24 @@ bool SkellAudioProcessor::isBusesLayoutSupported(const BusesLayout& l) const {
 
 void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer&) {
   juce::ScopedNoDenormals guard;
-  lastCallbackTick_.store(juce::Time::getMillisecondCounter(), std::memory_order_relaxed);
-  // Host playback state is observed on the audio callback without publishing PDC
-  // or changing processor topology there. Unknown state permits a stopped-mode
-  // change; hosts that expose playback state prevent active transport switching.
-  bool isPlaying = false;
-  if (auto* playhead = getPlayHead()) {
-    if (auto position = playhead->getPosition())
-      isPlaying = position->getIsPlaying();
-  }
-  transportPlaying_.store(isPlaying, std::memory_order_release);
+
+  // A buffer smaller than the negotiated layout (or empty) is never valid; leave it untouched instead of reading past it.
+  if (buffer.getNumSamples() <= 0 || buffer.getNumChannels() < juce::jmax(getTotalNumInputChannels(), getTotalNumOutputChannels())) return;
 
   skell::SpacerParams p;
   p.amount = pAmount->load() * 0.01f;
   p.smooth = pSmooth->load() * 0.01f;
-  p.link = pLink->load() * 0.01f;
   p.attackMs = pAttack->load();
   p.releaseMs = pRelease->load();
   p.lowHz = pLow->load();
   p.highHz = pHigh->load();
+  p.scLowHz = pScLow->load();
+  p.scHighHz = pScHigh->load();
   p.freeze = pFreeze->load() > 0.5f;
   p.power = pPower->load() > 0.5f;
-  p.pan = pPan->load();
+  p.pan = pPan->load() * 0.01f;  // host Pan -100..100 -> engine -1..1
   p.ms = pMs->load() > 0.5f;
-  const bool live = liveActive_.load(std::memory_order_acquire);
-  if (live) liveEngine.setParams(p); else engine.setParams(p);
+  engine.setParams(p);
 
   auto mainBuf = getBusBuffer(buffer, true, 0);
   float* mainPtrs[2] = { nullptr, nullptr };
@@ -182,8 +156,27 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   else sidechainHold = juce::jmax(0, sidechainHold - n);
   sidechainActive.store(sidechainHold > 0, std::memory_order_relaxed);
 
-  if (live) liveEngine.process(mainPtrs, scPtrs, nMain, nSc, n);
-  else engine.process(mainPtrs, scPtrs, nMain, nSc, n);
+  // Listen: monitor the sidechain (as the detector hears it, after its filters) instead of the track, with a 10 ms
+  // crossfade; nothing happens without a sidechain. Work in fixed chunks so the monitor copy needs no allocation.
+  const float listenTarget = (pListen->load() > 0.5f && nSc > 0) ? 1.f : 0.f;
+  if (nSc == 0) listenMix = 0.f;
+  const float listenStep = (float) (1.0 / (0.010 * juce::jmax(1000.0, sampleRateHz.load())));
+  for (int pos = 0; pos < n; pos += kChunk) {
+    const int m = juce::jmin(kChunk, n - pos);
+    float* chunk[2] = { nMain > 0 ? mainPtrs[0] + pos : nullptr, nMain > 1 ? mainPtrs[1] + pos : nullptr };
+    const float* scChunk[2] = { nSc > 0 ? scPtrs[0] + pos : nullptr, nSc > 1 ? scPtrs[1] + pos : nullptr };
+    float* mon[2] = { scMon[0], scMon[1] };
+    engine.process(chunk, scChunk, nMain, nSc, m, mon);
+    if (nSc == 0 || (listenMix == listenTarget && listenTarget == 0.f)) continue;
+    for (int i = 0; i < m; ++i) {
+      listenMix = listenMix < listenTarget ? juce::jmin(listenTarget, listenMix + listenStep) : juce::jmax(listenTarget, listenMix - listenStep);
+      for (int c = 0; c < nMain; ++c) {
+        // Listen hears the exact mono key feeding analyse(), including anti-phase recovery.
+        const float s = scMon[0][i];
+        chunk[c][i] += (s - chunk[c][i]) * listenMix;
+      }
+    }
+  }
 }
 
 juce::AudioProcessorEditor* SkellAudioProcessor::createEditor() { return new SkellAudioProcessorEditor(*this); }
