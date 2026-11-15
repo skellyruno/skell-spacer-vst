@@ -1,28 +1,30 @@
 #pragma once
 // Zero-latency "Live" engine for Skell Spacer (no FFT in the audio path, no lookahead).
 //
-//   sidechain --> 60-band filter bank --> level per band --> cut depth per band (per channel)
-//   track     --> chain of 60 minimum-phase bell filters (one cut per band) --> out
+//   sidechain --> 84-band filter bank --> level per band --> cut depth per band (per channel)
+//   track     --> chain of up to 84 minimum-phase bell filters (one cut per band) --> out
 //
 // Bells whose cut is zero are skipped, so an idle engine returns the input bit-exactly.
 // The FFT here only feeds the spectrum display and is never in the audio path.
+#include <cstdint>
 #include "SpacerDSP.h"
 
 namespace skell {
 
 class ZeroLatencyEngine {
 public:
-  static constexpr int kBandsPerOct = 6;     // 1/6-octave bands, 20 Hz .. 20 kHz
-  static constexpr int kBands = 10 * kBandsPerOct;
-  static constexpr int kDisp = SpacerEngine::kDisp;
-  static constexpr int kMaxCh = SpacerEngine::kMaxCh;
+  static constexpr int kBandsPerOct = 8;     // 1/8-octave bands, 20 Hz .. 20 kHz
+  static constexpr int kBands = 10 * kBandsPerOct + 4;   // 20 Hz up to ~30 kHz (bands above 0.45 fs are dropped); the extra bands keep the top of the audible range covered
+  static constexpr int kDisp = 256;          // points in the display curves (20 Hz .. 20 kHz, log spaced)
+  static constexpr int kMaxCh = 2;
   static constexpr int kDispN = 4096;        // display FFT only
   static constexpr int kSpan = kBandsPerOct / 2 + 1;
-  static constexpr float kMaxCutDb = SpacerEngine::kMaxCutDb;
-  static constexpr float kBellQ = 8.65f;     // 1/6-octave bells: 1 / (2^(1/12) - 2^(-1/12))
-  static constexpr float kAnaQ = 6.0f;       // per stage; two stages per analysis band
+  static constexpr int kReach = 6;           // bells further than this many bands away are ignored when solving for the cuts
+  static constexpr float kMaxCutDb = 24.f;
+  static constexpr float kBellQ = 11.54f;    // 1/8-octave bells: 1 / (2^(1/16) - 2^(-1/16)); the Q actually used is bellQ[i] (below)
+  static constexpr float kAnaQ = 8.0f;       // per stage; two stages per analysis band (anaK[i] = 1 / its Q)
   static constexpr float kFullDb = 6.f;      // full cut this far below the sidechain's peak band
-  static constexpr float kNoneDb = 36.f;     // no cut this far below it
+  static constexpr float kNoneDb = 30.f;     // no cut this far below it
 
   ZeroLatencyEngine() { prepare(48000.0); }
 
@@ -32,6 +34,8 @@ public:
   void prepare(double sampleRate) {
     fs = std::isfinite(sampleRate) && sampleRate >= 1000.0 ? std::min(sampleRate, 384000.0) : 44100.0;
     mixStep = (float)(1.0 / (0.010 * fs));
+    guardDecay = (float)std::exp(-1.0 / (0.010 * fs));
+    guardRelease = (float)(1.0 - std::exp(-1.0 / (0.005 * fs)));
     step = fs <= 50000.0 ? 16 : (fs <= 100000.0 ? 32 : 64);
     stepSec = (float)(step / fs);
 
@@ -40,21 +44,48 @@ public:
       fc[i] = 20.f * std::exp2(((float)i + 0.5f) / (float)kBandsPerOct);
       if (fc[i] < 0.45f * (float)fs) nb = i + 1;
     }
-    const float k = 1.0f / kAnaQ;
     for (int i = 0; i < nb; ++i) {
       const float g = (float)std::tan(kPi * fc[i] / fs);
+      // The bilinear transform squeezes the top of the spectrum: a filter of fixed Q gets narrower (in Hz) towards
+      // Nyquist. Keep every band 1/8 octave wide in Hz by lowering Q as the centre approaches Nyquist.
+      const float widthHz = fc[i] * (std::exp2(0.5f / (float)kBandsPerOct) - std::exp2(-0.5f / (float)kBandsPerOct));
+      bellQ[i] = std::min(kBellQ, g / ((float)kPi / (float)fs * (1.0f + g * g) * widthHz));
+      const float k = kBellQ / (kAnaQ * bellQ[i]);       // = 1 / analysis Q
+      anaK[i] = k;
       anaA1[i] = 1.0f / (1.0f + g * (g + k));
       anaA2[i] = g * anaA1[i];
       anaA3[i] = g * anaA2[i];
       bellG[i] = g;
       const float tau = std::max(0.004f, 2.5f / fc[i]);
       anaPowCoef[i] = 1.0f - std::exp(-1.0f / ((float)fs * tau));
+      density[i] = 1000.0f / fc[i];                 // 1 / bandwidth: every band is 1/8 octave wide in Hz
     }
-    // Overlapping bells add in dB; scale each so a uniform request lands near the requested depth.
-    const int mid = nb / 2;
-    float sum = 0.f;
-    for (int j = 0; j < nb; ++j) sum += bellDb(fc[mid], fc[j], -12.f);
-    invNorm = 1.0f / std::max(1.0f, sum / -12.f);
+    // Neighbouring bells overlap and their cuts add in dB. The cuts are solved for (updateControl) so that the summed
+    // response hits the requested depth at every band centre AND halfway between bands: kernC[i][k] / kernM[i][k] say how
+    // much of a unit cut on band i+k lands on the centre of band i / on the point between bands i and i+1 (real,
+    // bilinear-warped bell shapes). That removes the ripple a plain "scale everything down" would leave.
+    for (int i = 0; i < nb; ++i) {
+      const float fMid = std::sqrt(fc[i] * fc[std::min(i + 1, nb - 1)]);
+      for (int k = -kReach; k <= kReach; ++k) {
+        const int j = i + k;
+        const bool ok = j >= 0 && j < nb;
+        kernC[i][k + kReach] = ok ? bellDb(warp(fc[i]) / bellG[j], -8.f, bellQ[j]) / -8.f : 0.f;
+        kernM[i][k + kReach] = ok ? bellDb(warp(fMid) / bellG[j], -8.f, bellQ[j]) / -8.f : 0.f;
+      }
+    }
+    // safe gradient step: 1 / (largest row sum x largest column sum) bounds the largest eigenvalue of M^T M
+    float maxRow = 1.f, maxCol = 1.f; float col[kBands] = {};
+    for (int i = 0; i < nb; ++i) {
+      float rc = 0.f, rm = 0.f;
+      for (int k = -kReach; k <= kReach; ++k) {
+        const int j = i + k; if (j < 0 || j >= nb) continue;
+        rc += std::fabs(kernC[i][k + kReach]); col[j] += std::fabs(kernC[i][k + kReach]);
+        if (i < nb - 1) { rm += std::fabs(kernM[i][k + kReach]); col[j] += std::fabs(kernM[i][k + kReach]); }
+      }
+      maxRow = std::max(maxRow, std::max(rc, rm));
+    }
+    for (int j = 0; j < nb; ++j) maxCol = std::max(maxCol, col[j]);
+    lsStep = 0.9f / (maxRow * maxCol);
 
     dispFft.init(kDispN);
     dispWin.resize(kDispN);
@@ -71,16 +102,18 @@ public:
       dispLo[i] = lo; dispHi[i] = hi;
     }
     bandDirty = true;
+    updateScFilter();
     reset();
   }
 
   void reset() {
     clearAnalysis();
     std::memset(env, 0, sizeof env);
-    std::memset(cutDb, 0, sizeof cutDb);
+    std::memset(applied, 0, sizeof applied);
+    std::memset(solved, 0, sizeof solved);
     for (auto& c : bell) for (auto& b : c) b = Bell();
-    peak[0] = peak[1] = 0.f;
-    stepCount = 0; mix = 0.f; anyActive = false; prevShared = true;
+    peak = 0.f;
+    stepCount = 0; mix = 0.f; anyActive = false; guardPk = 0.f; guardGain = 1.f;
     std::fill(dispTrack.begin(), dispTrack.end(), 0.f);
     std::fill(dispSc.begin(), dispSc.end(), 0.f);
     dispPos = 0; dispCount = 0;
@@ -92,7 +125,6 @@ public:
     auto fin = [](float v, float lo, float hi, float def) { return std::isfinite(v) ? std::min(hi, std::max(lo, v)) : def; };
     p.amount = fin(p.amount, 0.f, 1.f, 0.f);
     p.smooth = fin(p.smooth, 0.f, 1.f, 0.f);
-    p.link = fin(p.link, 0.f, 1.f, 0.f);
     p.pan = fin(p.pan, -1.f, 1.f, 0.f);
     p.attackMs = fin(p.attackMs, 1.f, 200.f, 10.f);
     p.releaseMs = fin(p.releaseMs, 5.f, 2000.f, 150.f);
@@ -102,12 +134,22 @@ public:
       p.highHz = p.lowHz * 1.25f;
       if (p.highHz > 20000.f) { p.highHz = 20000.f; p.lowHz = 16000.f; }
     }
+    p.scLowHz = fin(p.scLowHz, 20.f, 20000.f, 20.f);
+    p.scHighHz = fin(p.scHighHz, 20.f, 20000.f, 20000.f);
+    if (p.scHighHz < p.scLowHz * 1.25f) {          // keep a pass-band open: the filters never collapse into silence
+      p.scHighHz = p.scLowHz * 1.25f;
+      if (p.scHighHz > 20000.f) { p.scHighHz = 20000.f; p.scLowHz = 16000.f; }
+    }
     if (p.lowHz != params.lowHz || p.highHz != params.highHz) bandDirty = true;
+    const bool scChanged = p.scLowHz != params.scLowHz || p.scHighHz != params.scHighHz;
     params = p;
+    if (scChanged) updateScFilter();
   }
 
   // In-place on `main` (1 or 2 channels). `sc` may be null / nSc == 0.
-  void process(float* const* main, const float* const* sc, int nCh, int nSc, int nSamples) {
+  // `scOut` (optional, kMaxCh channels of nSamples) receives the sidechain exactly as the detector hears it (after the
+  // sidechain filters), for monitoring.
+  void process(float* const* main, const float* const* sc, int nCh, int nSc, int nSamples, float* const* scOut = nullptr) {
     if (!main || nCh < 1 || nSamples <= 0) return;
     nCh = std::min(nCh, kMaxCh);
     for (int c = 0; c < nCh; ++c) if (!main[c]) return;
@@ -118,9 +160,6 @@ public:
     if (mix == 0.f && wantMs != msApplied) { msApplied = wantMs; resetBells(); }   // domain flips only while fully dry (after a 10 ms fade)
     const float target = (params.power && params.amount > 1e-4f && wantMs == msApplied) ? 1.f : 0.f;
     const bool ms = msApplied;
-    // One detector (shared by both sides) unless a stereo sidechain drives a stereo track in L/R mode.
-    const bool shared = !(nSc >= 2 && nCh == 2 && !ms);
-    if (shared != prevShared) { clearAnalysis(); prevShared = shared; }
     if (nSc == 0 && hadSc) { clearAnalysis(); hadSc = false; }
     if (nSc > 0) hadSc = true;
 
@@ -129,14 +168,15 @@ public:
       else if (mix > target) mix = std::max(target, mix - mixStep);
 
       const float x0 = clean(main[0][i]), x1 = nCh > 1 ? clean(main[1][i]) : 0.f;
-      float d0 = 0.f, d1 = 0.f;
+      float d = 0.f;      // the sidechain, filtered, then summed to mono
       if (nSc > 0) {
-        if (shared) d0 = nSc >= 2 ? 0.5f * (clean(sc[0][i]) + clean(sc[1][i])) : clean(sc[0][i]);
-        else { d0 = clean(sc[0][i]); d1 = clean(sc[1][i]); }
-        analyse(0, d0);
-        if (!shared) analyse(1, d1);
+        float s0 = scFilter(0, clean(sc[0][i])), s1 = 0.f;
+        if (nSc >= 2) s1 = scFilter(1, clean(sc[1][i]));
+        d = nSc >= 2 ? 0.5f * (s0 + s1) : s0;
+        if (scOut) { if (scOut[0]) scOut[0][i] = s0; if (nSc >= 2 && scOut[1]) scOut[1][i] = s1; }
+        analyse(d);
       }
-      feedDisplay(nCh > 1 ? 0.5f * (x0 + x1) : x0, shared ? d0 : 0.5f * (d0 + d1));
+      feedDisplay(nCh > 1 ? 0.5f * (x0 + x1) : x0, d);
 
       float y0 = x0, y1 = x1;
       if (mix > 0.f && anyActive) {
@@ -148,10 +188,19 @@ public:
         if (!std::isfinite(y0) || !std::isfinite(y1)) { resetBells(); y0 = x0; y1 = x1; }
         else if (mix < 1.f) { y0 = x0 + (y0 - x0) * mix; y1 = x1 + (y1 - x1) * mix; }
       }
+      // Overshoot guard: ducking only removes energy, but filtering shifts phase and can push a peak a little
+      // above the input's. Hold the output to the input's recent (10 ms) peak: instant attack, 5 ms release,
+      // so it costs no delay and does nothing at all (bit-exact) unless an overshoot really happens.
+      guardPk = std::max(std::max(std::fabs(x0), std::fabs(x1)), guardPk * guardDecay);
+      if (guardPk < 1.0e-20f) guardPk = 0.f;        // below -400 dBFS: silence (and keeps the follower out of denormals)
+      const float outPk = std::max(std::fabs(y0), std::fabs(y1));
+      if (guardGain < 1.f) { guardGain += (1.f - guardGain) * guardRelease; if (guardGain > 0.99999f) guardGain = 1.f; }
+      if (outPk * guardGain > guardPk) guardGain = guardPk / outPk;
+      if (guardGain < 1.f) { y0 *= guardGain; y1 *= guardGain; }
       main[0][i] = y0;
       if (nCh > 1) main[1][i] = y1;
 
-      if (++stepCount >= step) { stepCount = 0; updateControl(nCh, shared); }
+      if (++stepCount >= step) { stepCount = 0; updateControl(nCh); }
     }
   }
 
@@ -164,20 +213,72 @@ public:
   }
 
 private:
-  struct Bell { float a1 = 0, a2 = 0, a3 = 0, m1 = 0, ic1 = 0, ic2 = 0; bool on = false; };
+  // 2nd-order TPT state-variable filter; two in series with Butterworth Qs give a 24 dB/oct sidechain filter
+  struct Svf {
+    float a1 = 0, a2 = 0, a3 = 0, k = 1, ic1 = 0, ic2 = 0;
+    void set(float g, float q) { k = 1.f / q; a1 = 1.f / (1.f + g * (g + k)); a2 = g * a1; a3 = g * a2; }
+    float step(float x, float& lp) {
+      const float v3 = x - ic2, v1 = a1 * ic1 + a2 * v3, v2 = ic2 + a2 * ic1 + a3 * v3;
+      ic1 = 2.f * v1 - ic1; ic2 = 2.f * v2 - ic2;
+      lp = v2; return x - k * v1 - v2;      // returns the high-pass output
+    }
+    void flush() { if (std::fabs(ic1) < 1.0e-20f) ic1 = 0.f; if (std::fabs(ic2) < 1.0e-20f) ic2 = 0.f; }
+  };
+  struct Bell { float a1 = 0, a2 = 0, a3 = 0, m1 = 0, gx = 1, ic1 = 0, ic2 = 0; bool on = false; };
 
   static float clean(float v) { return std::isfinite(v) ? v : 0.f; }
+  // log2 / exp2 to ~1e-4 relative accuracy (0.001 dB), for the per-step level and coefficient maths
+  static float fastLog2(float x) {
+    uint32_t u; std::memcpy(&u, &x, 4);
+    const float e = (float)((int)(u >> 23) - 127);
+    u = (u & 0x007fffffu) | 0x3f800000u;
+    float m; std::memcpy(&m, &u, 4);
+    const float t = (m - 1.f) / (m + 1.f), t2 = t * t;
+    return e + 2.88539008f * t * (1.f + t2 * (0.333333333f + t2 * 0.2f));
+  }
+  static float fastExp2(float x) {                 // x in about [-100, 100]
+    const float fl = std::floor(x), f = x - fl;
+    const float p = 1.f + f * (0.693147181f + f * (0.240226507f + f * (0.0555041087f + f * 0.00961812911f)));
+    uint32_t u = (uint32_t)((int)fl + 127) << 23; float sc; std::memcpy(&sc, &u, 4);
+    return p * sc;
+  }
   static float clamp01(float v) { return std::min(1.f, std::max(0.f, v)); }
   static float smoothstep(float t) { t = clamp01(t); return t * t * (3.f - 2.f * t); }
 
-  static float bellDb(float f, float fcBell, float gainDb) {
-    const float A = std::pow(10.f, gainDb / 40.f), k = 1.f / (kBellQ * A), w = f / fcBell;
+  // frequency -> the bilinear-transform's warped axis; a bell centred on band j sees ratio warp(f) / bellG[j]
+  float warp(float f) const { return (float)std::tan(kPi * (double)std::min(f, 0.499f * (float)fs) / fs); }
+
+  // magnitude (dB) of a bell with gain gainDb at warped-frequency ratio w
+  static float bellDb(float w, float gainDb, float q) {
+    const float A = std::pow(10.f, gainDb / 40.f), k = 1.f / (q * A);
     const float d = 1.f - w * w;
     return 10.f * std::log10(((d * d) + (k * A * A * w) * (k * A * A * w)) / ((d * d) + (k * w) * (k * w)));
   }
 
+  float scFilter(int c, float x) {
+    float lp = 0.f;
+    if (scHpOn) { x = scHp[c][0].step(x, lp); x = scHp[c][1].step(x, lp); }
+    if (scLpOn) { scLp[c][0].step(x, lp); const float l1 = lp; scLp[c][1].step(l1, lp); x = lp; }
+    return x;
+  }
+  void updateScFilter() {
+    scHpOn = params.scLowHz > 20.5f;
+    scLpOn = params.scHighHz < 19500.f;
+    const float nyq = 0.45f * (float)fs;
+    const float gh = (float)std::tan(kPi * std::min(params.scLowHz, nyq) / fs);
+    const float gl = (float)std::tan(kPi * std::min(params.scHighHz, nyq) / fs);
+    for (int c = 0; c < kMaxCh; ++c) {      // 4th-order Butterworth: Q = 0.5412, 1.3066
+      scHp[c][0].set(gh, 0.54119610f); scHp[c][1].set(gh, 1.30656296f);
+      scLp[c][0].set(gl, 0.54119610f); scLp[c][1].set(gl, 1.30656296f);
+      if (!scHpOn) scHp[c][0].ic1 = scHp[c][0].ic2 = scHp[c][1].ic1 = scHp[c][1].ic2 = 0.f;
+      if (!scLpOn) scLp[c][0].ic1 = scLp[c][0].ic2 = scLp[c][1].ic1 = scLp[c][1].ic2 = 0.f;
+    }
+  }
+
   void clearAnalysis() {
-    std::memset(anaState, 0, sizeof anaState);
+    for (auto& c : scHp) for (auto& f : c) f.ic1 = f.ic2 = 0.f;
+    for (auto& c : scLp) for (auto& f : c) f.ic1 = f.ic2 = 0.f;
+    std::memset(anaS, 0, sizeof anaS);
     std::memset(anaPow, 0, sizeof anaPow);
   }
   void resetBells() { for (auto& c : bell) for (auto& b : c) { b.ic1 = b.ic2 = 0.f; } }
@@ -193,23 +294,23 @@ private:
   }
 
   // detector d: sidechain -> two cascaded unity-peak band-passes per band -> smoothed power
-  void analyse(int d, float x) {
+  void analyse(float x) {
     x += 1.0e-25f;
-    float* st = anaState[d];
-    float* pw = anaPow[d];
+    // state laid out per field (not per band) so the loop over bands vectorises
+    float* __restrict s0 = anaS[0]; float* __restrict s1 = anaS[1]; float* __restrict s2 = anaS[2]; float* __restrict s3 = anaS[3];
+    float* __restrict pw = anaPow;
     for (int i = 0; i < nb; ++i) {
-      float* c = st + 4 * i;
       const float a1 = anaA1[i], a2 = anaA2[i], a3 = anaA3[i];
-      float v3 = x - c[1];
-      float v1 = a1 * c[0] + a2 * v3;
-      float v2 = c[1] + a2 * c[0] + a3 * v3;
-      c[0] = 2.f * v1 - c[0]; c[1] = 2.f * v2 - c[1];
-      const float y = v1 * (1.f / kAnaQ);
-      v3 = y - c[3];
-      v1 = a1 * c[2] + a2 * v3;
-      v2 = c[3] + a2 * c[2] + a3 * v3;
-      c[2] = 2.f * v1 - c[2]; c[3] = 2.f * v2 - c[3];
-      const float z = v1 * (1.f / kAnaQ);
+      float v3 = x - s1[i];
+      float v1 = a1 * s0[i] + a2 * v3;
+      float v2 = s1[i] + a2 * s0[i] + a3 * v3;
+      s0[i] = 2.f * v1 - s0[i]; s1[i] = 2.f * v2 - s1[i];
+      const float y = v1 * anaK[i];
+      v3 = y - s3[i];
+      v1 = a1 * s2[i] + a2 * v3;
+      v2 = s3[i] + a2 * s2[i] + a3 * v3;
+      s2[i] = 2.f * v1 - s2[i]; s3[i] = 2.f * v2 - s3[i];
+      const float z = v1 * anaK[i];
       pw[i] += (z * z - pw[i]) * anaPowCoef[i] + 1.0e-30f;
     }
   }
@@ -218,26 +319,29 @@ private:
     for (int i = 0; i < nb; ++i) {
       Bell& b = bell[c][i];
       if (!b.on) continue;
+      // x + m1*v1 with v1 = a2*x + (a1*ic1 - a2*ic2) folded into one multiply-add on x, so the serial path
+      // through the cascade is a single fused op per bell; the state update runs off that path
       const float v3 = x - b.ic2;
-      const float v1 = b.a1 * b.ic1 + b.a2 * v3;
+      const float v1 = b.a2 * x + (b.a1 * b.ic1 - b.a2 * b.ic2);
       const float v2 = b.ic2 + b.a2 * b.ic1 + b.a3 * v3;
+      const float nx = b.gx * x + b.m1 * (b.a1 * b.ic1 - b.a2 * b.ic2);
       b.ic1 = 2.f * v1 - b.ic1;
       b.ic2 = 2.f * v2 - b.ic2;
-      x += b.m1 * v1;
+      x = nx;
     }
     return x;
   }
 
-  // every `step` samples: levels -> depth -> envelope -> link/pan -> bell coefficients
-  void updateControl(int nCh, bool shared) {
+  // every `step` samples: levels -> depth -> envelope -> pan -> bell coefficients
+  void updateControl(int nCh) {
     if (bandDirty) buildBand();
+    for (auto& c : scHp) for (auto& f : c) f.flush();
+    for (auto& c : scLp) for (auto& f : c) f.flush();
     const float aCoef = std::exp(-stepSec / std::max(0.001f, params.attackMs * 0.001f));
     const float rCoef = std::exp(-stepSec / std::max(0.005f, params.releaseMs * 0.001f));
     const float peakDecay = std::exp(-stepSec / 2.0f);
     const float h = params.smooth * 0.5f * (float)kBandsPerOct;   // spread (in bands) of the detected power (up to 1/2 octave)
-    const int nDet = shared ? 1 : 2;
-
-    for (int d = 0; d < nDet; ++d) {
+    {
       float ps[kBands], curPeak = 0.f;
       for (int i = 0; i < nb; ++i) {
         float sum = 0.f, wsum = 0.f;
@@ -245,21 +349,24 @@ private:
           const int q = i + j;
           if (q < 0 || q >= nb) continue;
           const float w = clamp01(h - (float)std::abs(j) + 1.f);
-          sum += w * anaPow[d][q]; wsum += w;
+          sum += w * anaPow[q]; wsum += w;
         }
         ps[i] = 2.f * sum / wsum;                 // unity-peak band-pass: sine power A^2/2 -> A^2
-        curPeak = std::max(curPeak, ps[i]);
+        curPeak = std::max(curPeak, ps[i] * density[i]);
       }
-      peak[d] = std::max(curPeak, peak[d] * peakDecay);
-      const float peakDb = 10.f * std::log10(std::max(peak[d], 1e-20f));
+      peak = std::max(curPeak, peak * peakDecay);
+      const float peakDb = 3.01029996f * fastLog2(std::max(peak, 1e-20f));
 
       for (int i = 0; i < nb; ++i) {
-        const float db = 10.f * std::log10(std::max(ps[i], 1e-20f));
-        const float rel = clamp01((db - peakDb + kNoneDb) / (kNoneDb - kFullDb));
+        // Compare bands by power per Hz (the bands are constant-Q, so wide ones collect more of a broadband
+        // signal): a flat key then asks for the same cut everywhere, like a per-bin FFT would.
+        const float dbDens = 3.01029996f * fastLog2(std::max(ps[i] * density[i], 1e-20f));
+        const float db = 3.01029996f * fastLog2(std::max(ps[i], 1e-20f));
+        const float rel = clamp01((dbDens - peakDb + kNoneDb) / (kNoneDb - kFullDb));
         const float gate = clamp01((db + 85.f) / 10.f);
         const float t = rel * gate;
         if (!params.freeze) {
-          float& e = env[d][i];
+          float& e = env[i];
           const float cf = t > e ? aCoef : rCoef;
           e = t + (e - t) * cf;
           if (e < 1.0e-4f && t < 1.0e-4f) e = 0.f;
@@ -271,21 +378,44 @@ private:
     float w[2] = { params.pan > 0.f ? 1.f - params.pan : 1.f, params.pan < 0.f ? 1.f + params.pan : 1.f };
     if (nCh == 1) w[0] = 1.f;
     anyActive = false;
+    for (int c = nCh; c < kMaxCh; ++c) std::fill(applied[c], applied[c] + kBands, 0.f);
+    // solve for the per-band cuts whose overlapped sum gives the requested depth: a few damped gradient steps on the
+    // least-squares error at band centres and mid-points, never boosting
+    // padded by kReach zeros each side so the kernel loops have fixed trip counts and no bounds tests
+    float req[kBands + 1] = {}, pad[kBands + 2 * kReach] = {};
+    float* const cut0 = pad + kReach;
+    for (int i = 0; i < nb; ++i) req[i] = params.amount * kMaxCutDb * env[i] * bandWeight[i];
+    req[nb] = req[nb - 1];                          // the last band has no mid-point above it: mid-point target = its own
+    std::copy(solved, solved + nb, cut0);           // warm start: the previous control step's solution
+    for (int it = 0; it < 2; ++it) {
+      float accPad[kBands + 2 * kReach] = {};
+      float* const acc = accPad + kReach;
+      for (int i = 0; i < nb; ++i) {
+        const float* kc = kernC[i]; const float* km = kernM[i]; const float* cp = cut0 + i - kReach;
+        float totC = 0.f, totM = 0.f;
+        for (int k = 0; k < 2 * kReach + 1; ++k) { totC += kc[k] * cp[k]; totM += km[k] * cp[k]; }
+        const bool top = i < nb - 1;
+        const float eC = req[i] - totC, eM = top ? 0.5f * (req[i] + req[i + 1]) - totM : 0.f;
+        float* ap = acc + i - kReach;
+        for (int k = 0; k < 2 * kReach + 1; ++k) ap[k] += kc[k] * eC + km[k] * eM;
+      }
+      for (int j = 0; j < nb; ++j) cut0[j] = std::min(2.f * kMaxCutDb, std::max(0.f, cut0[j] + lsStep * acc[j]));
+    }
+    std::copy(cut0, cut0 + nb, solved);
     for (int i = 0; i < nb; ++i) {
-      const float e0 = env[0][i], e1 = shared ? e0 : env[1][i], deeper = std::max(e0, e1);
-      const float eff[2] = { e0 + (deeper - e0) * params.link, e1 + (deeper - e1) * params.link };
-      cutDb[i] = params.amount * kMaxCutDb * e0 * bandWeight[i];        // shown in the display
       for (int c = 0; c < nCh; ++c) {
         Bell& b = bell[c][i];
         if (std::fabs(b.ic1) < 1.0e-20f) b.ic1 = 0.f;          // flush decaying state before it goes denormal
         if (std::fabs(b.ic2) < 1.0e-20f) b.ic2 = 0.f;
-        const float cut = params.amount * kMaxCutDb * eff[c] * bandWeight[i] * w[c] * invNorm;
+        const float cut = cut0[i] * w[c];
+        applied[c][i] = cut < 0.003f ? 0.f : cut;
         if (cut < 0.003f) { if (b.on) { b.on = false; b.ic1 = b.ic2 = 0.f; } continue; }
-        const float A = std::exp(-cut * 0.05756463f);          // 10^(-cut/40)
-        const float k = 1.f / (kBellQ * A), g = bellG[i];
+        const float A = fastExp2(-cut * 0.08304820f);          // 10^(-cut/40)
+        const float k = 1.f / (bellQ[i] * A), g = bellG[i];
         b.a1 = 1.f / (1.f + g * (g + k));
         b.a2 = g * b.a1; b.a3 = g * b.a2;
         b.m1 = k * (A * A - 1.f);
+        b.gx = 1.f + b.m1 * b.a2;
         b.on = true; anyActive = true;
       }
     }
@@ -318,23 +448,36 @@ private:
       }
       dispMain[i].store(10.f * std::log10(std::max(m, 1e-12f)), std::memory_order_relaxed);
       dispScOut[i].store(10.f * std::log10(std::max(sc, 1e-12f)), std::memory_order_relaxed);
-      const float t = (float)i / (float)(kDisp - 1);
-      const float pos = std::min(std::max(std::log2(std::pow(1000.f, t)) * (float)kBandsPerOct - 0.5f, 0.f), (float)(nb - 1));
-      const int lo = (int)pos, hi = std::min(lo + 1, nb - 1);
-      dispCut[i].store(cutDb[lo] + (cutDb[hi] - cutDb[lo]) * (pos - (float)lo), std::memory_order_relaxed);
+    }
+    // the real combined response of the bell chain (deeper of the two sides), not an estimate
+    for (int i = 0; i < kDisp; ++i) {
+      const float f = 20.f * std::pow(1000.f, (float)i / (float)(kDisp - 1));
+      const float wf = warp(f);
+      float deepest = 0.f;
+      for (int c = 0; c < kMaxCh; ++c) {
+        float sum = 0.f;
+        for (int j = 0; j < nb; ++j)
+          if (applied[c][j] > 0.f && std::fabs(std::log2(f / fc[j])) < 1.5f) sum += bellDb(wf / bellG[j], -applied[c][j], bellQ[j]);
+        deepest = std::max(deepest, -sum);
+      }
+      dispCut[i].store(deepest, std::memory_order_relaxed);
     }
   }
 
   double fs = 48000.0;
   SpacerParams params;
   int nb = kBands, step = 16, stepCount = 0;
-  float stepSec = 0.f, invNorm = 1.f, mix = 0.f, mixStep = 0.002f, peak[2] = {};
-  bool msApplied = false, bandDirty = true, anyActive = false, hadSc = false, prevShared = true;
+  float stepSec = 0.f, mix = 0.f, mixStep = 0.002f, peak = 0.f;
+  float guardPk = 0.f, guardGain = 1.f, guardDecay = 0.99f, guardRelease = 0.01f;
+  bool msApplied = false, bandDirty = true, anyActive = false, hadSc = false;
   float fc[kBands] = {}, bandWeight[kBands] = {}, bellG[kBands] = {};
-  float anaA1[kBands] = {}, anaA2[kBands] = {}, anaA3[kBands] = {}, anaPowCoef[kBands] = {};
-  float anaState[2][kBands * 4] = {}, anaPow[2][kBands] = {};
-  float env[2][kBands] = {}, cutDb[kBands] = {};
+  float kernC[kBands][2 * kReach + 1] = {}, kernM[kBands][2 * kReach + 1] = {}, solved[kBands] = {}, lsStep = 0.f;
+  float density[kBands] = {}, bellQ[kBands] = {}, anaK[kBands] = {}, anaA1[kBands] = {}, anaA2[kBands] = {}, anaA3[kBands] = {}, anaPowCoef[kBands] = {};
+  float anaS[4][kBands] = {}, anaPow[kBands] = {};
+  float env[kBands] = {}, applied[kMaxCh][kBands] = {};   // applied: the cut (dB) each bell really makes
   Bell bell[kMaxCh][kBands];
+  Svf scHp[kMaxCh][2], scLp[kMaxCh][2];
+  bool scHpOn = false, scLpOn = false;
 
   FFT dispFft;
   std::vector<float> dispWin, dispRe, dispIm, dispTrack, dispSc;

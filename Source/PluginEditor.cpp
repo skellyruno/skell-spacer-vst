@@ -71,6 +71,40 @@ void SkellLookAndFeel::drawLinearSlider(juce::Graphics& g, int x, int y, int w, 
   }
 }
 
+// round icon buttons: a power symbol and a pair of headphones, drawn as vectors so they stay crisp at any size
+void SkellLookAndFeel::drawIconButton(juce::Graphics& g, juce::Button& button, bool highlighted, bool down) {
+  const bool on = button.getToggleState();
+  const auto b = button.getLocalBounds().toFloat().reduced(1.0f);
+  const float d = juce::jmin(b.getWidth(), b.getHeight());
+  const auto c = b.getCentre();
+  const auto circle = juce::Rectangle<float>(d, d).withCentre(c);
+  g.setColour(on ? kAccent : (down ? kBtnDown : (highlighted ? kBtnHover : kPanelHi)));
+  g.fillEllipse(circle);
+  g.setColour(on ? kAccent : (highlighted ? kBoneDim : kLine));
+  g.drawEllipse(circle.reduced(0.5f), 1.0f);
+
+  const auto ink = on ? kOnAccent : (highlighted ? kAccent : kBone);
+  g.setColour(ink);
+  const float u = d / 30.0f, lw = juce::jmax(1.4f, 2.0f * u);
+  if (button.getComponentID() == "icon_power") {
+    juce::Path arc;
+    const float r = 7.0f * u;
+    arc.addCentredArc(c.x, c.y + 0.6f * u, r, r, 0.0f, 0.62f, juce::MathConstants<float>::twoPi - 0.62f, true);
+    g.strokePath(arc, juce::PathStrokeType(lw, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.drawLine(c.x, c.y - 8.0f * u, c.x, c.y - 1.0f * u, lw);
+    g.fillEllipse(c.x - lw * 0.5f, c.y - 8.0f * u - lw * 0.5f, lw, lw);
+  } else {
+    juce::Path band;
+    const float r = 7.5f * u;
+    band.addCentredArc(c.x, c.y + 0.5f * u, r, r, 0.0f, -1.5f, 1.5f, true);   // angles run clockwise from 12 o'clock
+    // headband meets the ear cups
+    const float cupW = 3.8f * u, cupH = 7.0f * u, cupY = c.y + 0.3f * u;
+    g.strokePath(band, juce::PathStrokeType(lw, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+    g.fillRoundedRectangle(c.x - r - cupW * 0.5f - 0.2f * u, cupY, cupW, cupH, 1.2f * u);
+    g.fillRoundedRectangle(c.x + r - cupW * 0.5f + 0.2f * u, cupY, cupW, cupH, 1.2f * u);
+  }
+}
+
 void SkellLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& button, const juce::Colour&,
                                             bool highlighted, bool down) {
   sync();
@@ -81,6 +115,7 @@ void SkellLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& but
     }
     return;
   }
+  if (button.getComponentID() == "titleswitch") return;   // invisible: the editor draws the title text itself
   if (button.getComponentID() == "labelbutton") {      // text is drawn by the editor; just show it is clickable
     if (highlighted || down) {
       g.setColour(kAccent.withAlpha(down ? 0.28f : 0.16f));
@@ -88,6 +123,7 @@ void SkellLookAndFeel::drawButtonBackground(juce::Graphics& g, juce::Button& but
     }
     return;
   }
+  if (button.getComponentID().startsWith("icon_")) { drawIconButton(g, button, highlighted, down); return; }
   auto r = button.getLocalBounds().toFloat().reduced(0.5f);
   auto fill = kPanelHi;
   if (down) fill = kBtnDown; else if (highlighted) fill = kBtnHover;
@@ -104,7 +140,7 @@ juce::Font SkellLookAndFeel::getTextButtonFont(juce::TextButton&, int buttonHeig
 
 void SkellLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& button, bool, bool) {
   sync();
-  if (button.getComponentID() == "logo" || button.getComponentID() == "labelbutton") return;
+  if (button.getComponentID() == "logo" || button.getComponentID() == "labelbutton" || button.getComponentID() == "titleswitch" || button.getComponentID().startsWith("icon_")) return;
   g.setColour(button.getToggleState() ? kOnAccent : (button.isMouseOver() ? kAccent : kBone));
   g.setFont(getTextButtonFont(button, button.getHeight()));
   g.drawFittedText(button.getButtonText().toUpperCase(), button.getLocalBounds().reduced(4, 1),
@@ -173,7 +209,7 @@ void SpectrumView::paint(juce::Graphics& g) {
   // cut curve (accent)
   juce::Path cut;
   for (int i = 0; i < N; ++i) {
-    auto y = y0 + span * sCut[i] / skell::SpacerEngine::kMaxCutDb;
+    auto y = y0 + span * sCut[i] / skell::ZeroLatencyEngine::kMaxCutDb;
     i ? cut.lineTo(xAt(i), y) : cut.startNewSubPath(xAt(i), y);
   }
   g.setColour(kAccent.withAlpha(0.22f));
@@ -224,17 +260,58 @@ void SpectrumView::paint(juce::Graphics& g) {
   g.drawRect(r, 1.0f);
 }
 
+BandControl::BandControl(juce::RangedAudioParameter& lo, juce::RangedAudioParameter& hi, std::function<void()> changed)
+ : lowP(lo), highP(hi),
+   lowA(lo, [this, changed](float) { refresh(); changed(); }),
+   highA(hi, [this, changed](float) { refresh(); changed(); }) {
+  slider.setSliderStyle(juce::Slider::TwoValueHorizontal);
+  slider.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+  slider.setRange(0.0, 1.0, 0.0);
+  slider.setPopupDisplayEnabled(false, false, nullptr);
+  slider.onDragStart = [this] {
+    draggedThumb = slider.getThumbBeingDragged();
+    if (draggedThumb == 1) lowA.beginGesture();
+    if (draggedThumb == 2) highA.beginGesture();
+  };
+  slider.onDragEnd = [this] {
+    if (draggedThumb == 1) lowA.endGesture();
+    if (draggedThumb == 2) highA.endGesture();
+    draggedThumb = 0;
+  };
+  slider.onValueChange = [this] {
+    // Work out which thumb moved by comparing with the parameters, so a callback that
+    // arrives after the drag ended (they can be asynchronous) is still applied.
+    const double minGap = std::log(1.25) / std::log(1000.0);
+    double lo = slider.getMinValue(), hi = slider.getMaxValue();
+    const bool lowMoved  = std::abs(lo - (double) lowP.getValue())  > 1.0e-6;
+    const bool highMoved = std::abs(hi - (double) highP.getValue()) > 1.0e-6;
+    if (hi - lo < minGap) {
+      if (lowMoved && !highMoved) lo = hi - minGap; else hi = lo + minGap;
+      if (lo < 0.0) { lo = 0.0; hi = minGap; }
+      if (hi > 1.0) { hi = 1.0; lo = 1.0 - minGap; }
+      slider.setMinAndMaxValues(lo, hi, juce::dontSendNotification);
+    }
+    auto push = [](juce::ParameterAttachment& a, juce::RangedAudioParameter& prm, double norm, bool inGesture) {
+      const float v = prm.convertFrom0to1((float) norm);
+      if (inGesture) a.setValueAsPartOfGesture(v); else a.setValueAsCompleteGesture(v);
+    };
+    if (lowMoved)  push(lowA,  lowP,  lo, draggedThumb == 1);
+    if (highMoved) push(highA, highP, hi, draggedThumb == 2);
+  };
+}
+
 // ---------------------------------------------------------------- editor
 SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
  : AudioProcessorEditor(&p), proc(p), spectrum(p),
-   amountA(p.parameters, "amount", amount), smoothA(p.parameters, "smooth", smooth), linkA(p.parameters, "link", link),
+   amountA(p.parameters, "amount", amount), smoothA(p.parameters, "smooth", smooth),
    panA(p.parameters, "pan", pan),
    attackA(p.parameters, "attack", attack), releaseA(p.parameters, "release", release),
    freezeA(p.parameters, "freeze", freeze), powerA(p.parameters, "power", power),
-    liveA(p.parameters, "liveMode", live), msA(p.parameters, "ms", msToggle),
-   lowParam(p.parameters.getParameter("lowcut")), highParam(p.parameters.getParameter("highcut")),
-   lowA(*lowParam, [this](float) { bandChanged(); }),
-   highA(*highParam, [this](float) { bandChanged(); }) {
+    listenA(p.parameters, "listen", listen), msA(p.parameters, "ms", msToggle),
+   band(*p.parameters.getParameter("lowcut"), *p.parameters.getParameter("highcut"),
+        [this] { repaintDesign({ 14.0f, 368.0f, 522.0f, 70.0f }); }),
+   scBand(*p.parameters.getParameter("schp"), *p.parameters.getParameter("sclp"),
+          [this] { repaintDesign({ 14.0f, 368.0f, 522.0f, 70.0f }); }) {
   setTitle("Skell Spacer");
   theme = proc.getTheme();
   applyTheme(theme);
@@ -246,7 +323,7 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   setResizeLimits(defaultWidth * 4 / 5, defaultHeight * 4 / 5, defaultWidth * 2, defaultHeight * 2);
   if (auto* c = getConstrainer()) c->setFixedAspectRatio((double) designWidth / (double) designHeight);
 
-  for (auto* s : { &amount, &smooth, &link, &pan, &attack, &release }) {
+  for (auto* s : { &amount, &smooth, &pan, &attack, &release }) {
     s->setLookAndFeel(look.get());
     s->setSliderStyle(juce::Slider::RotaryHorizontalVerticalDrag);
     s->setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
@@ -254,55 +331,26 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
     addAndMakeVisible(*s);
   }
 
-  band.setLookAndFeel(look.get());
-  band.setSliderStyle(juce::Slider::TwoValueHorizontal);
-  band.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
-  band.setRange(0.0, 1.0, 0.0);
-  band.setPopupDisplayEnabled(false, false, nullptr);
-  band.onDragStart = [this] {
-    draggedThumb = band.getThumbBeingDragged();
-    if (draggedThumb == 1) lowA.beginGesture();
-    if (draggedThumb == 2) highA.beginGesture();
-  };
-  band.onDragEnd = [this] {
-    if (draggedThumb == 1) lowA.endGesture();
-    if (draggedThumb == 2) highA.endGesture();
-    draggedThumb = 0;
-  };
-  band.onValueChange = [this] {
-    // Work out which thumb moved by comparing with the parameters, so a callback that
-    // arrives after the drag ended (they can be asynchronous) is still applied.
-    const double minGap = std::log(1.25) / std::log(1000.0);
-    double lo = band.getMinValue(), hi = band.getMaxValue();
-    const bool lowMoved  = std::abs(lo - (double) lowParam->getValue())  > 1.0e-6;
-    const bool highMoved = std::abs(hi - (double) highParam->getValue()) > 1.0e-6;
-    if (hi - lo < minGap) {
-      if (lowMoved && !highMoved) lo = hi - minGap; else hi = lo + minGap;
-      if (lo < 0.0) { lo = 0.0; hi = minGap; }
-      if (hi > 1.0) { hi = 1.0; lo = 1.0 - minGap; }
-      band.setMinAndMaxValues(lo, hi, juce::dontSendNotification);
-    }
-    auto push = [](juce::ParameterAttachment& a, juce::RangedAudioParameter& prm, double norm, bool inGesture) {
-      const float v = prm.convertFrom0to1((float) norm);
-      if (inGesture) a.setValueAsPartOfGesture(v); else a.setValueAsCompleteGesture(v);
-    };
-    if (lowMoved)  push(lowA,  *lowParam,  lo, draggedThumb == 1);
-    if (highMoved) push(highA, *highParam, hi, draggedThumb == 2);
-  };
-  addAndMakeVisible(band);
+  band.slider.setTooltip("Low / High Cut: the range of the track that can be ducked");
+  scBand.slider.setTooltip("Sidechain filter: high-pass (left) and low-pass (right) on what the detector hears, "
+                           "e.g. to keep rumble or sibilance from driving the ducking. Use Listen to hear the result.");
+  for (auto* b : { &band, &scBand }) {
+    b->slider.setLookAndFeel(look.get());
+    addAndMakeVisible(b->slider);
+  }
+  scBand.slider.setVisible(false);
 
-  for (auto* b : { &freeze, &power, &live }) {
+  for (auto* b : { &freeze, &power, &listen }) {
     b->setLookAndFeel(look.get());
     b->setClickingTogglesState(true);
     b->setWantsKeyboardFocus(false);
     addAndMakeVisible(*b);
   }
   freeze.setTooltip("Hold the current cut shape, even after the sidechain stops");
-  power.setTooltip("Crossfade between processed and correctly aligned dry audio");
-  live.setTooltip("Live: zero-latency engine (60 bands, no lookahead). "
-                  "Studio: higher-resolution FFT engine with added latency. "
-                  "Stop DAW playback to apply a new latency mode.");
-  link.setTooltip("Stereo Link: 0% = each side ducks on its own sidechain, 100% = both sides duck by the deeper cut");
+  power.setTooltip("Power: on = ducking active, off = bypass (crossfaded, delay-aligned)");
+  power.setComponentID("icon_power");
+  listen.setComponentID("icon_listen");
+  listen.setTooltip("Listen: hear the sidechain instead of the track, to tune what drives the ducking");
   pan.setTooltip("Pan: where the ducking is applied. Centre = both sides; left/right = only that side "
                  "(in M/S mode: left = Mid only, right = Side only)");
   msToggle.setTooltip("Switch Pan between Left/Right and Mid/Side");
@@ -312,6 +360,26 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   msToggle.setWantsKeyboardFocus(false);
   msToggle.onStateChange = [this] { repaintDesign({ 14.0f, 336.0f, 522.0f, 16.0f }); };
   addAndMakeVisible(msToggle);
+
+  bandToggle.setTooltip("Click the title to switch this slider between the affected BAND (Low / High Cut) and the SIDECHAIN FILTER "
+                        "(high-pass / low-pass on what the detector hears; Listen plays the result)");
+  bandToggle.setLookAndFeel(look.get());
+  bandToggle.setComponentID("titleswitch");
+  bandToggle.setMouseCursor(juce::MouseCursor::PointingHandCursor);
+  bandToggle.onStateChange = [this] { repaintDesign({ 150.0f, 372.0f, 250.0f, 18.0f }); };
+  bandToggle.setWantsKeyboardFocus(false);
+  bandToggle.onClick = [this] { showSidechainFilter(!scView); };
+  addAndMakeVisible(bandToggle);
+
+  entry.setVisible(false);
+  entry.setJustificationType(juce::Justification::centred);
+  entry.setEditable(false, false, false);
+  entry.onEditorHide = [this] { entry.setVisible(false); };   // entryFor stays valid: onTextChange runs after this
+  entry.onTextChange = [this] {
+    if (entryFor) entryFor->setValue(entryFor->getValueFromText(entry.getText()), juce::sendNotificationSync);
+  };
+  addChildComponent(entry);
+  addMouseListener(this, true);       // right-click on a knob = type a value
 
 
   skinButton.setLookAndFeel(look.get());
@@ -328,29 +396,54 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   addAndMakeVisible(skinButton);
   addAndMakeVisible(spectrum);
 
-  lowA.sendInitialUpdate();
-  highA.sendInitialUpdate();
+  band.sendInitialUpdate();
+  scBand.sendInitialUpdate();
   resized();
   startTimerHz(30);
 }
 
 SkellAudioProcessorEditor::~SkellAudioProcessorEditor() {
   stopTimer();
-  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &link, &pan, &attack, &release, &band, &freeze, &power, &live, &msToggle, &skinButton })
+  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &pan, &attack, &release, &band.slider, &scBand.slider, &freeze, &power, &listen, &msToggle, &bandToggle, &skinButton })
     c->setLookAndFeel(nullptr);
+}
+
+void SkellAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
+  if (!e.mods.isPopupMenu()) return;
+  if (auto* s = dynamic_cast<juce::Slider*>(e.eventComponent); s != nullptr && s->isRotary()) beginTypedEntry(*s);
+}
+
+void SkellAudioProcessorEditor::beginTypedEntry(juce::Slider& s) {
+  entryFor = &s;
+  entry.setColour(juce::Label::textColourId, kBone);
+  entry.setColour(juce::Label::backgroundColourId, kBg);
+  entry.setColour(juce::Label::outlineColourId, kAccent);
+  entry.setColour(juce::TextEditor::textColourId, kBone);
+  entry.setColour(juce::TextEditor::backgroundColourId, kBg);
+  entry.setColour(juce::TextEditor::highlightColourId, kAccent.withAlpha(0.4f));
+  entry.setColour(juce::TextEditor::highlightedTextColourId, kBone);
+  entry.setColour(juce::TextEditor::outlineColourId, kAccent);
+  entry.setFont(makeFont(13.0f * scale(), true, 0.02f));
+  entry.setEditable(true, true, false);
+  entry.setText(s.getTextFromValue(s.getValue()), juce::dontSendNotification);
+  entry.setBounds(s.getBounds().reduced(juce::roundToInt(10.0f * scale()), juce::roundToInt(22.0f * scale())));
+  entry.setVisible(true);
+  entry.toFront(false);
+  entry.showEditor();
 }
 
 void SkellAudioProcessorEditor::repaintDesign(juce::Rectangle<float> r) {
   repaint((r * scale()).getSmallestIntegerContainer().expanded(1));
 }
 
-void SkellAudioProcessorEditor::bandChanged() {
-  band.setMinAndMaxValues(lowParam->getValue(), highParam->getValue(), juce::dontSendNotification);
+void SkellAudioProcessorEditor::showSidechainFilter(bool show) {
+  scView = show;
+  band.slider.setVisible(!show);
+  scBand.slider.setVisible(show);
   repaintDesign({ 14.0f, 368.0f, 522.0f, 70.0f });
 }
 
 void SkellAudioProcessorEditor::timerCallback() {
-  proc.applyRequestedModeIfStopped(); // message-thread-only host PDC change
   spectrum.tick();
   const bool a = proc.isSidechainActive();
   if (a != scActive) scActive = a;
@@ -366,7 +459,11 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
 
   // header
   drawSpacerMark(g, 16.0f, 11.0f, kBone, kAccent, kBg);
-  drawText(g, "SKELL SPACER", { 100.0f, 9.0f, 169.0f, 26.0f }, 19.0f, true, kBone, juce::Justification::centredLeft, 0.16f);
+  {
+    const float tx = 100.0f, ty = 9.0f, tw = textWidth(makeFont(19.0f, true, 0.16f), "SKELL");
+    drawText(g, "SKELL", { tx, ty, 120.0f, 26.0f }, 19.0f, true, kBone, juce::Justification::centredLeft, 0.16f);
+    drawText(g, "SPACER", { tx + tw, ty, 140.0f, 26.0f }, 19.0f, true, kAccent, juce::Justification::centredLeft, 0.16f);
+  }
   drawText(g, "SPACE / DUCK / SIDECHAIN", { 101.0f, 33.0f, 172.0f, 14.0f }, 10.0f, false, kBoneDim,
            juce::Justification::centredLeft, 0.18f);
 
@@ -375,7 +472,7 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
     const float y = 54.0f;
     const int n = 48;
     const float slot = (float) (designWidth - 28) / (float) n;
-    const int lit = juce::jlimit(0, n, juce::roundToInt(spectrum.maxCutDb() / skell::SpacerEngine::kMaxCutDb * (float) n));
+    const int lit = juce::jlimit(0, n, juce::roundToInt(spectrum.maxCutDb() / skell::ZeroLatencyEngine::kMaxCutDb * (float) n));
     for (int i = 0; i < n; ++i) {
       const bool on = i < lit;
       const float h = on ? 3.4f : 2.0f;
@@ -387,32 +484,38 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
   // spectrum card
   drawCard(g, { 14.0f, 66.0f, 522.0f, 184.0f });
   drawText(g, "SPECTRUM", { 30.0f, 72.0f, 120.0f, 14.0f }, 10.5f, true, kBoneDim, juce::Justification::centredLeft, 0.2f);
-  const auto status = proc.isLivePending()
-      ? juce::String("STOP TO APPLY MODE")
-      : (scActive ? juce::String("SIDECHAIN OK") : juce::String("NO SIDECHAIN"));
-  drawText(g, status, { 330.0f, 72.0f, 192.0f, 14.0f }, 10.5f, true, proc.isLivePending() ? kWarn : (scActive ? kAccent : kWarn), juce::Justification::centredRight, 0.2f);
-  drawText(g, juce::String(proc.getCurrentSampleRate() / 1000.0, 1) + " kHz   /   "
-              + juce::String(proc.getLatencySamples()) + " smp latency",
+  const auto status = scActive ? juce::String("SIDECHAIN OK") : juce::String("NO SIDECHAIN");
+  drawText(g, status, { 330.0f, 72.0f, 192.0f, 14.0f }, 10.5f, true, scActive ? kAccent : kWarn, juce::Justification::centredRight, 0.2f);
+  drawText(g, juce::String(proc.getCurrentSampleRate() / 1000.0, 1) + " kHz   /   ZERO LATENCY",
            { 150.0f, 72.0f, 190.0f, 14.0f }, 10.0f, false, kBoneDim, juce::Justification::centredLeft, 0.1f);
 
   // controls card
   drawCard(g, { 14.0f, 256.0f, 522.0f, 104.0f });
-  const float cellW = 522.0f / 6.0f;
+  const float cellW = 522.0f / 5.0f;
   const bool msOn = proc.parameters.getRawParameterValue("ms")->load() > 0.5f;
   const juce::String panName = msOn ? "PAN  M / S" : "PAN  L / R";
-  const char* names[6] = { "AMOUNT", "SMOOTH", "LINK", panName.toRawUTF8(), "ATTACK", "RELEASE" };
-  for (int i = 0; i < 6; ++i)
+  const char* names[5] = { "AMOUNT", "SMOOTH", panName.toRawUTF8(), "ATTACK", "RELEASE" };
+  for (int i = 0; i < 5; ++i)
     drawText(g, names[i], { 14.0f + cellW * (float) i, 336.0f, cellW, 16.0f }, 10.5f, true, kBoneDim, juce::Justification::centred, 0.2f);
   g.setColour(kLine);
-  for (int i = 1; i < 6; ++i) g.fillRect(14.0f + cellW * (float) i, 268.0f, 1.0f, 80.0f);
+  for (int i = 1; i < 5; ++i) g.fillRect(14.0f + cellW * (float) i, 268.0f, 1.0f, 80.0f);
 
-  // band card
+  // band / sidechain-filter card: the title row is a two-way switch
   drawCard(g, { 14.0f, 368.0f, 522.0f, 70.0f });
-  drawText(g, "LOW CUT", { 30.0f, 374.0f, 70.0f, 14.0f }, 10.5f, true, kBoneDim, juce::Justification::centredLeft, 0.2f);
-  drawText(g, lowParam->getCurrentValueAsText(), { 92.0f, 374.0f, 100.0f, 14.0f }, 11.5f, true, kBone, juce::Justification::centredLeft);
-  drawText(g, "HIGH CUT", { 450.0f, 374.0f, 72.0f, 14.0f }, 10.5f, true, kBoneDim, juce::Justification::centredRight, 0.2f);
-  drawText(g, highParam->getCurrentValueAsText(), { 340.0f, 374.0f, 100.0f, 14.0f }, 11.5f, true, kBone, juce::Justification::centredRight);
-  drawText(g, "BAND", { 14.0f, 374.0f, 522.0f, 14.0f }, 10.5f, true, kBoneDim, juce::Justification::centred, 0.2f);
+  auto& vis = scView ? scBand : band;
+  drawText(g, scView ? "HIGH-PASS" : "LOW CUT", { 30.0f, 374.0f, 90.0f, 14.0f }, 10.5f, true, kBoneDim, juce::Justification::centredLeft, 0.2f);
+  drawText(g, vis.lowP.getCurrentValueAsText(), { scView ? 122.0f : 92.0f, 374.0f, 100.0f, 14.0f }, 11.5f, true, kBone, juce::Justification::centredLeft);
+  drawText(g, scView ? "LOW-PASS" : "HIGH CUT", { 450.0f, 374.0f, 72.0f, 14.0f }, 10.5f, true, kBoneDim, juce::Justification::centredRight, 0.2f);
+  drawText(g, vis.highP.getCurrentValueAsText(), { 340.0f, 374.0f, 100.0f, 14.0f }, 11.5f, true, kBone, juce::Justification::centredRight);
+  // the title is the switch: BAND <-> SIDECHAIN FILTER (brighter on hover; a dot marks an active filter while it is hidden)
+  const bool scFilterOn = scBand.lowP.getValue() > 0.0f || scBand.highP.getValue() < 1.0f;
+  const juce::String title = scView ? "SIDECHAIN FILTER" : "BAND";
+  drawText(g, title, { 150.0f, 374.0f, 250.0f, 14.0f }, 10.5f, true, bandToggle.isMouseOver() ? kAccent : kBone, juce::Justification::centred, 0.2f);
+  if (!scView && scFilterOn) {
+    g.setColour(kAccent);
+    const float cx = 275.0f + textWidth(makeFont(10.5f, true, 0.2f), "BAND") * 0.5f + 8.0f;   // design-space coordinates
+    g.fillEllipse(cx - 2.5f, 381.0f - 2.5f, 5.0f, 5.0f);
+  }
 
   drawText(g, "v" + juce::String(JucePlugin_VersionString), { 14.0f, 440.0f, 80.0f, 10.0f }, 8.5f, false, kBoneFaint, juce::Justification::centredLeft);
 }
@@ -423,14 +526,16 @@ void SkellAudioProcessorEditor::resized() {
     return juce::Rectangle<int>(juce::roundToInt(x * s), juce::roundToInt(y * s), juce::roundToInt(w * s), juce::roundToInt(h * s));
   };
   skinButton.setBounds(fit(10.0f, 6.0f, 84.0f, 38.0f));
-  live.setBounds(fit(273.0f, 16.0f, 64.0f, 24.0f));
-  freeze.setBounds(fit(342.0f, 16.0f, 100.0f, 24.0f));
-  power.setBounds(fit(448.0f, 16.0f, 88.0f, 24.0f));
+  power.setBounds(fit(506.0f, 10.0f, 30.0f, 30.0f));          // top-right corner
+  listen.setBounds(fit(468.0f, 10.0f, 30.0f, 30.0f));
+  freeze.setBounds(fit(404.0f, 15.0f, 56.0f, 20.0f));
   spectrum.setBounds(fit(28.0f, 90.0f, 494.0f, 152.0f));
-  const float cellW = 522.0f / 6.0f, kd = 62.0f;
-  juce::Slider* knobs[6] = { &amount, &smooth, &link, &pan, &attack, &release };
-  for (int i = 0; i < 6; ++i)
+  const float cellW = 522.0f / 5.0f, kd = 62.0f;
+  juce::Slider* knobs[5] = { &amount, &smooth, &pan, &attack, &release };
+  for (int i = 0; i < 5; ++i)
     knobs[i]->setBounds(fit(14.0f + cellW * ((float) i + 0.5f) - kd * 0.5f, 270.0f, kd, kd));
-  msToggle.setBounds(fit(14.0f + cellW * 3.0f + 4.0f, 334.0f, cellW - 8.0f, 20.0f));
-  band.setBounds(fit(26.0f, 392.0f, 498.0f, 34.0f));
+  msToggle.setBounds(fit(14.0f + cellW * 2.0f + 4.0f, 334.0f, cellW - 8.0f, 20.0f));
+  band.slider.setBounds(fit(26.0f, 392.0f, 498.0f, 34.0f));
+  scBand.slider.setBounds(fit(26.0f, 392.0f, 498.0f, 34.0f));
+  bandToggle.setBounds(fit(200.0f, 371.0f, 150.0f, 20.0f));
 }

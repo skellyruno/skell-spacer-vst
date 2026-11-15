@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
-project(SkellSpacer VERSION 1.0.0 LANGUAGES C CXX)
+# Static MSVC runtime: the VST3 then loads on a Windows machine without the Visual C++ redistributable installed.
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+project(SkellSpacer VERSION 1.1.0 LANGUAGES C CXX)
 include(FetchContent)
 if(DEFINED JUCE_PATH AND EXISTS "${JUCE_PATH}/CMakeLists.txt")
   add_subdirectory("${JUCE_PATH}" JUCE)
@@ -14,6 +16,7 @@ juce_add_plugin(SkellSpacer
   PLUGIN_MANUFACTURER_CODE SkAu
   PLUGIN_CODE Sk02
   FORMATS VST3
+  VST3_CATEGORIES Fx
   PRODUCT_NAME "Skell Spacer"
   IS_SYNTH FALSE
   NEEDS_MIDI_INPUT FALSE
