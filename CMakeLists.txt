@@ -29,3 +29,22 @@ target_compile_features(SkellSpacer PRIVATE cxx_std_17)
 target_compile_definitions(SkellSpacer PUBLIC JUCE_VST3_CAN_REPLACE_VST2=0)
 target_compile_definitions(SkellSpacer PRIVATE JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
 target_link_libraries(SkellSpacer PRIVATE juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)
+
+# Optional, real JUCE editor audit. Excluded from normal production VST3 builds.
+option(SKELL_ENABLE_EDITOR_AUDIT "Build real JUCE editor screenshot/control audit" OFF)
+if(SKELL_ENABLE_EDITOR_AUDIT)
+  juce_add_console_app(SkellSpacerUIAudit PRODUCT_NAME "SkellSpacerUIAudit")
+  juce_generate_juce_header(SkellSpacerUIAudit)
+  target_sources(SkellSpacerUIAudit PRIVATE
+    tests/ui_render.cpp
+    Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.h Source/PluginEditor.h
+    Source/SpacerDSP.h Source/ZeroLatencyEngine.h Source/SkellTheme.h)
+  target_include_directories(SkellSpacerUIAudit PRIVATE Source)
+  target_compile_features(SkellSpacerUIAudit PRIVATE cxx_std_17)
+  target_compile_definitions(SkellSpacerUIAudit PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+    JucePlugin_VersionString=\"${PROJECT_VERSION}\")
+  target_link_libraries(SkellSpacerUIAudit PRIVATE
+    juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)
+endif()

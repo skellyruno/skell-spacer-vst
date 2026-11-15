@@ -88,3 +88,23 @@ DSP and headless editor tests pass (JUCE 8.0.12 on Linux), and the plugin source
 ## Known behaviour
 - Resolution is 1/8 octave: a tone ducks the track about 24 dB at its own frequency, about 20 dB a quarter-octave away, 11 dB at half an octave and almost nothing beyond. Broadband material is ducked about 24-25 dB across the whole range.
 - CPU: about 5-6 % of one core for a stereo instance at 48 kHz in the worst case (about 20 % at 192 kHz).
+
+
+## V16 release-candidate compatibility gate
+
+V16 uses an 84-band causal minimum-phase engine; the historical FFT Studio
+path and Stereo Link DSP are not present. Published automation IDs and the VST3
+identity remain unchanged for state parsing, but **legacy Studio projects are
+not sound-compatible with V16**. Keep V7 available until a tested migration is
+approved. Do not merge or present V16 as a stable replacement for old projects.
+
+The optional CMake build setting SKELL_ENABLE_EDITOR_AUDIT compiles the real
+JUCE editor control/screenshot tests. The V16 PR CI branch runs this once as a
+release-candidate gate and uploads screenshots of four actual skins at three
+sizes plus interaction states for visual inspection. It is not a daily UI
+screenshot workflow.
+
+Windows VST3 + pluginval passes do not replace real FL Studio checks: host scan,
+mono/stereo sidechain routing, project load/save, automation, knob interactions,
+Listen/bypass, UI scaling, native audio A/B, glitch measurements, and Windows
+CPU/latency profiles remain release requirements.

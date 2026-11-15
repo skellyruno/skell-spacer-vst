@@ -8,11 +8,13 @@
 #include <cstdio>
 #include <thread>
 
+#if ! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS
 namespace juce {
 void privatePostSystemNotification(const String&, const String&) {}
 bool juce_handleXEmbedEvent(ComponentPeer*, void*) { return false; }
 unsigned long juce_getCurrentFocusWindow(ComponentPeer*) { return 0; }
 }
+#endif
 
 static int failures = 0;
 static void check(bool ok, const juce::String& what) { std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what.toRawUTF8()); if (!ok) ++failures; }

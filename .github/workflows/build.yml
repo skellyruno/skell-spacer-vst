@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -A x64
+        run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=ON
       - name: Build
         run: cmake --build build --config Release --parallel 2
       - name: Package
@@ -50,6 +50,30 @@ jobs:
           name: skell-spacer-vst-Windows-VST3
           path: skell-spacer-vst-Windows-VST3.zip
           if-no-files-found: error
+
+      # Release-candidate-only real JUCE editor audit (not an everyday screenshot workflow).
+      # Not executed on main, release, production or manual builds.
+      - name: Build actual JUCE editor audit
+        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        run: cmake --build build --config Release --target SkellSpacerUIAudit --parallel 2
+      - name: Render real editor and exercise controls
+        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Compiled JUCE UI audit executable missing' }
+          New-Item -ItemType Directory -Force -Path ui-audit | Out-Null
+          & $exe.FullName ui-audit
+          if ($LASTEXITCODE -ne 0) { throw "Real editor UI audit failed ($LASTEXITCODE)" }
+          $screens = @(Get-ChildItem ui-audit -Filter '*.png')
+          if ($screens.Count -lt 15) { throw "Expected 15+ actual editor screenshots; got $($screens.Count)" }
+      - uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        with:
+          retention-days: 7
+          name: SkellSpacer-V16-Real-Editor-Audit
+          path: ui-audit/*.png
+          if-no-files-found: warn
       # Host-style check (load, bus layouts, state save/restore, automation, parameter fuzzing, threading).
       # Runs after the upload so a validator failure never hides the build; the run just goes red.
       - name: Validate with pluginval

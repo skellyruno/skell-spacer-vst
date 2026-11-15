@@ -7,11 +7,13 @@
 #include <cstdio>
 
 // Hooks that juce_gui_extra normally provides; unused in an offscreen run.
+#if ! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS
 namespace juce {
 void privatePostSystemNotification(const String&, const String&) {}
 bool juce_handleXEmbedEvent(ComponentPeer*, void*) { return false; }
 unsigned long juce_getCurrentFocusWindow(ComponentPeer*) { return 0; }
 }
+#endif
 
 static int failures = 0;
 static void check(bool ok, const juce::String& what) {
@@ -64,7 +66,8 @@ int main(int argc, char** argv) {
   proc.setRateAndBufferSizeDetails(48000.0, 512);
   proc.prepareToPlay(48000.0, 512);
   check(proc.getTotalNumInputChannels() == 4, "main + sidechain buses enabled (4 input channels)");
-  check(proc.getLatencySamples() == 0, "Live (default) reports zero latency");
+  check(proc.getLatencySamples() == 0, "V16 reports zero added latency");
+  check(proc.getNumPrograms() == 1 && proc.getCurrentProgram() == 0 && proc.getProgramName(0) == "Default", "host default program has a visible name");
 
   // ---- render every skin at three sizes
   struct Size { int w, h; const char* tag; };
@@ -263,6 +266,19 @@ int main(int argc, char** argv) {
   juce::MemoryBlock blk; proc.getStateInformation(blk);
   proc.setTheme(0); proc.setStateInformation(blk.getData(), (int) blk.getSize());
   check(proc.getTheme() == 2, "skin restored from saved state");
+  {
+    const float oldAmount = proc.parameters.getRawParameterValue("amount")->load();
+    const float oldPan = proc.parameters.getRawParameterValue("pan")->load();
+    const float oldHp = proc.parameters.getRawParameterValue("schp")->load();
+    proc.parameters.getParameter("amount")->setValueNotifyingHost(0.0f);
+    proc.parameters.getParameter("pan")->setValueNotifyingHost(0.0f);
+    proc.parameters.getParameter("schp")->setValueNotifyingHost(0.0f);
+    proc.setStateInformation(blk.getData(), (int) blk.getSize()); pump();
+    check(std::abs(proc.parameters.getRawParameterValue("amount")->load() - oldAmount) < 0.02f &&
+          std::abs(proc.parameters.getRawParameterValue("pan")->load() - oldPan) < 0.02f &&
+          std::abs(proc.parameters.getRawParameterValue("schp")->load() - oldHp) < 0.2f,
+          "state restore recalls Amount, Pan and sidechain high-pass");
+  }
 
   // freeze / bypass overlays render
   proc.parameters.getParameter("freeze")->setValueNotifyingHost(1.0f);
