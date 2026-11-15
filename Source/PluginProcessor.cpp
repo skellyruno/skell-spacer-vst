@@ -140,7 +140,7 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.scHighHz = pScHigh->load();
   p.freeze = pFreeze->load() > 0.5f;
   p.power = pPower->load() > 0.5f;
-  p.pan = pPan->load();
+  p.pan = pPan->load() * 0.01f;  // host Pan -100..100 -> engine -1..1
   p.ms = pMs->load() > 0.5f;
   engine.setParams(p);
 
@@ -181,8 +181,8 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
     for (int i = 0; i < m; ++i) {
       listenMix = listenMix < listenTarget ? juce::jmin(listenTarget, listenMix + listenStep) : juce::jmax(listenTarget, listenMix - listenStep);
       for (int c = 0; c < nMain; ++c) {
-        float s = scMon[0][i];
-        if (nSc >= 2) s = nMain == 1 ? 0.5f * (scMon[0][i] + scMon[1][i]) : scMon[c][i];
+        // Listen hears the exact mono key feeding analyse(), including anti-phase recovery.
+        const float s = scMon[0][i];
         chunk[c][i] += (s - chunk[c][i]) * listenMix;
       }
     }

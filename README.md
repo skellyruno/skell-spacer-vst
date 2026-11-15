@@ -124,3 +124,14 @@ The editor uses host-managed resizing without the default striped JUCE corner
 grip that appeared over the bottom-right border in actual min/default/max
 screenshots. The one-off V16 UI audit rerenders all four skins at three sizes
 and adds an actual editor/processor stress test.
+
+
+### V16 audit corrections — November 15, 2026
+
+- Pan is correctly normalized from the host's -100..100 percentage range to the
+  DSP's -1..1. Previously tiny movements could fully pan the ducking.
+- Listen now auditions the actual filtered, phase-safe mono sidechain detector,
+  including opposite-polarity stereo keys, rather than raw stereo channels.
+- Added low-level DSP and real processor-host audio regressions to prevent both
+  problems returning. These corrections do not restore legacy V7 FFT Studio DSP;
+  PR remains experimental pending FL Studio/Windows real-session testing.

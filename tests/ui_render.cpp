@@ -69,6 +69,55 @@ int main(int argc, char** argv) {
   check(proc.getLatencySamples() == 0, "V16 reports zero added latency");
   check(proc.getNumPrograms() == 1 && proc.getCurrentProgram() == 0 && proc.getProgramName(0) == "Default", "host default program has a visible name");
 
+  { // Host-level Pan regression: 0 / 50 R / 100 R must have three distinct sonic positions.
+    auto leftRms = [](float hostPan) {
+      SkellAudioProcessor p; p.enableAllBuses();
+      p.setRateAndBufferSizeDetails(48000.0, 256); p.prepareToPlay(48000.0, 256);
+      auto* prm = p.parameters.getParameter("pan");
+      prm->setValueNotifyingHost(prm->convertTo0to1(hostPan));
+      p.parameters.getParameter("amount")->setValueNotifyingHost(1.0f);
+      juce::AudioBuffer<float> b(4,256); juce::MidiBuffer midi;
+      double sum=0.0; int count=0;
+      for (int block=0; block<220; ++block) {
+        for (int i=0; i<256; ++i) {
+          const float v=(float)std::sin(juce::MathConstants<double>::twoPi*1000.0*(block*256+i)/48000.0);
+          b.setSample(0,i,.2f*v); b.setSample(1,i,.2f*v);
+          b.setSample(2,i,.4f*v); b.setSample(3,i,.4f*v);
+        }
+        p.processBlock(b,midi);
+        if (block>=170) for (int i=0; i<256; ++i) {
+          const double v=b.getSample(0,i);sum+=v*v;++count;
+        }
+      }
+      return std::sqrt(sum/count);
+    };
+    const double c=leftRms(0.0f), h=leftRms(50.0f), r=leftRms(100.0f);
+    check(c < h*.8 && h < r*.8 && r > .12,
+          "host Pan 0 / 50 R / 100 R gives progressive left-side ducking: "
+          + juce::String(c,4) + " / " + juce::String(h,4) + " / " + juce::String(r,4));
+  }
+  { // Host-level Listen regression for a stereo sidechain whose channels cancel in mono.
+    SkellAudioProcessor p; p.enableAllBuses();
+    p.setRateAndBufferSizeDetails(48000.0,256); p.prepareToPlay(48000.0,256);
+    p.parameters.getParameter("listen")->setValueNotifyingHost(1.0f);
+    juce::AudioBuffer<float> b(4,256); juce::MidiBuffer midi;
+    double energy=0.0, delta=0.0; int count=0;
+    for (int block=0; block<220; ++block) {
+      for (int i=0; i<256; ++i) {
+        const float v=(float)(.4*std::sin(juce::MathConstants<double>::twoPi*1000.0*(block*256+i)/48000.0));
+        b.setSample(0,i,0.f); b.setSample(1,i,0.f);
+        b.setSample(2,i,v); b.setSample(3,i,-v);
+      }
+      p.processBlock(b,midi);
+      if (block>=170) for (int i=0; i<256; ++i) {
+        const double l=b.getSample(0,i),r=b.getSample(1,i);
+        energy+=l*l; delta+=(l-r)*(l-r); ++count;
+      }
+    }
+    check(std::sqrt(energy/count) > .12 && std::sqrt(delta/count) < 1e-5,
+          "Listen plays a coherent phase-safe sidechain in stereo");
+  }
+
   // ---- render every skin at three sizes
   struct Size { int w, h; const char* tag; };
   const Size sizes[] = { { SkellAudioProcessorEditor::defaultWidth, SkellAudioProcessorEditor::defaultHeight, "default" },

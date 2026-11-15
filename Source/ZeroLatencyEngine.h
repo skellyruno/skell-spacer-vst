@@ -197,7 +197,11 @@ public:
         } else {
           phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
         }
-        if (scOut) { if (scOut[0]) scOut[0][i] = s0; if (nSc >= 2 && scOut[1]) scOut[1][i] = s1; }
+        if (scOut) {
+          // Export the actual phase-safe, post-filter detector key to Listen.
+          if (scOut[0]) scOut[0][i] = d;
+          if (scOut[1]) scOut[1][i] = d;
+        }
         analyse(d);
       }
       feedDisplay(nCh > 1 ? 0.5f * (x0 + x1) : x0, d);

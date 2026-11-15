@@ -134,6 +134,21 @@ int main() {
           -db(amp(std::vector<float>(fast.l.end()-24000, fast.l.end()), fs, 1000), 0.2) > 5.0,
           "phase-flipping stereo key: no click, block-independent, recovers ducking", jump);
   }
+  { // Monitor must audition the mono detector, even with an anti-phase stereo key.
+    const int n = 48000;
+    ZeroLatencyEngine e; e.prepare(fs); e.setParams(p);
+    auto in = sine(n, fs, 220, 0.1f), sc = sine(n, fs, 1000, 0.4f, 1.f, -1.f);
+    Sig monitor; monitor.l.resize(n); monitor.r.resize(n);
+    for (int pos = 0; pos < n; pos += 256) {
+      const int len = std::min(256, n - pos);
+      float* track[2] = { in.l.data()+pos, in.r.data()+pos };
+      const float* key[2] = { sc.l.data()+pos, sc.r.data()+pos };
+      float* heard[2] = { monitor.l.data()+pos, monitor.r.data()+pos };
+      e.process(track,key,2,2,len,heard);
+    }
+    check(monitor.l == monitor.r && amp(monitor.l,fs,1000) > 0.10,
+          "Listen output follows the audible phase-safe detector",amp(monitor.l,fs,1000));
+  }
   { // pan in L/R mode
     auto in = sine(48000, fs, 1000, 0.2f), sc = sine(48000, fs, 1000, 0.4f);
     for (float pan : { -1.f, 0.f, 1.f }) {
