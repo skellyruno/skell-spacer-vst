@@ -10,11 +10,13 @@ static std::atomic<bool> trackAlloc{false};
 static std::atomic<unsigned long> newCalls{0};
 void* operator new(std::size_t n) {
   if (trackAlloc.load(std::memory_order_relaxed)) newCalls.fetch_add(1, std::memory_order_relaxed);
-  if (void* p=std::malloc(n)) return p; throw std::bad_alloc();
+  if (void* p = std::malloc(n)) { return p; }
+  throw std::bad_alloc();
 }
 void* operator new[](std::size_t n) {
   if (trackAlloc.load(std::memory_order_relaxed)) newCalls.fetch_add(1, std::memory_order_relaxed);
-  if (void* p=std::malloc(n)) return p; throw std::bad_alloc();
+  if (void* p = std::malloc(n)) { return p; }
+  throw std::bad_alloc();
 }
 void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
