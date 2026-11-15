@@ -50,8 +50,95 @@ jobs:
             Get-ChildItem -Path build -Recurse -Filter '*.vst3' | ForEach-Object FullName
             throw 'VST3 bundle missing'
           }
-          if (-not (Test-Path "$plugin/Contents/x86_64-win/Skell Spacer.vst3")) { throw 'VST3 binary missing inside the bundle' }
+          # Reject duplicate/stale bundles instead of silently publishing the expected one.
+          $bundles = @(Get-ChildItem -Path 'build/SkellSpacer_artefacts/Release' -Recurse -Directory -Filter '*.vst3')
+          if ($bundles.Count -ne 1 -or $bundles[0].FullName -ne (Resolve-Path $plugin).Path) {
+            throw "Expected exactly one Release VST3 bundle at $plugin; found $($bundles.Count): $($bundles.FullName -join ', ')"
+          }
+          $binary = Join-Path $plugin 'Contents/x86_64-win/Skell Spacer.vst3'
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) { throw 'VST3 binary missing inside the bundle' }
+          # Windows x64 VST3 must contain a PE32+ AMD64 executable, not a stale or foreign binary.
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary).Path)
+          if ($bytes.Length -lt 256 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw 'VST3 binary has no DOS MZ header' }
+          $pe = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($pe -lt 64 -or $pe -gt ($bytes.Length - 26)) { throw 'Invalid PE header offset' }
+          if ([Text.Encoding]::ASCII.GetString($bytes, $pe, 4) -ne "PE`0`0") { throw 'Missing PE signature' }
+          if ([BitConverter]::ToUInt16($bytes, $pe + 4) -ne 0x8664) { throw 'VST3 binary is not AMD64' }
+          if ([BitConverter]::ToUInt16($bytes, $pe + 24) -ne 0x20b) { throw 'VST3 binary is not PE32+' }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $binary | Format-List
           Compress-Archive -Path $plugin -DestinationPath skell-spacer-vst-Windows-VST3.zip
+          $archive = (Resolve-Path 'skell-spacer-vst-Windows-VST3.zip').Path
+          Add-Type -AssemblyName System.IO.Compression
+          $zip = [IO.Compression.ZipFile]::OpenRead($archive)
+          try {
+            $entries = @($zip.Entries | Where-Object { $_.FullName -notmatch '/
+      - uses: actions/upload-artifact@v4
+        with:
+          retention-days: 7
+          name: skell-spacer-vst-Windows-VST3
+          path: skell-spacer-vst-Windows-VST3.zip
+          if-no-files-found: error
+
+      # Release-candidate-only real JUCE editor audit (not an everyday screenshot workflow).
+      # Not executed on main, release, production or manual builds.
+      - name: Build actual JUCE editor audit
+        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        run: cmake --build build --config Release --target SkellSpacerUIAudit SkellSpacerUIStress --parallel 2
+      - name: Render real editor and exercise controls
+        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Compiled JUCE UI audit executable missing' }
+          New-Item -ItemType Directory -Force -Path ui-audit | Out-Null
+          & $exe.FullName ui-audit
+          if ($LASTEXITCODE -ne 0) { throw "Real editor UI audit failed ($LASTEXITCODE)" }
+          $stress = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIStress.exe' | Select-Object -First 1
+          if (-not $stress) { throw 'Compiled JUCE editor stress executable missing' }
+          & $stress.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Real editor stress test failed ($LASTEXITCODE)" }
+          $screens = @(Get-ChildItem ui-audit -Filter '*.png')
+          if ($screens.Count -lt 15) { throw "Expected 15+ actual editor screenshots; got $($screens.Count)" }
+      - uses: actions/upload-artifact@v4
+        if: always() && github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        with:
+          retention-days: 7
+          name: SkellSpacer-V16-Real-Editor-Audit
+          path: ui-audit/*.png
+          if-no-files-found: warn
+      # Host-style check (load, bus layouts, state save/restore, automation, parameter fuzzing, threading).
+      # Runs after the upload so a validator failure never hides the build; the run just goes red.
+      - name: Validate with pluginval
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+          # pluginval_Windows.zip supplies a GUI-subsystem executable. Direct PowerShell
+          # invocation can return before it exits, leaving $LASTEXITCODE unset and
+          # marking a successful validation as failed. Explicitly wait and read ExitCode.
+          $validator = (Resolve-Path './pluginval/pluginval.exe').Path
+          $vst3 = (Resolve-Path 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3').Path
+          New-Item -ItemType Directory -Force -Path pluginval-log | Out-Null
+          $logDir = (Resolve-Path './pluginval-log').Path
+          $arguments = "--strictness-level 5 --validate-in-process --output-dir `"$logDir`" `"$vst3`""
+          $validation = Start-Process -FilePath $validator -ArgumentList $arguments -Wait -PassThru -NoNewWindow
+          if ($null -eq $validation.ExitCode) { throw 'pluginval finished without an exit code' }
+          if ($validation.ExitCode -ne 0) { throw "pluginval failed ($($validation.ExitCode))" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          retention-days: 7
+          name: pluginval-log
+          path: pluginval-log
+          if-no-files-found: ignore
+ })
+            $names = @($entries | ForEach-Object { $_.FullName.Replace('\\', '/') })
+            if (@($names | Select-Object -Unique).Count -ne $names.Count) { throw 'Duplicate ZIP paths detected' }
+            $expected = 'Skell Spacer.vst3/Contents/x86_64-win/Skell Spacer.vst3'
+            if ($names -cnotcontains $expected) { throw "ZIP missing expected binary: $expected" }
+            if (@($names | Where-Object { $_ -match '(^/|(^|/)\.\.(/|$)|^[A-Za-z]:)' }).Count -gt 0) { throw 'Unsafe ZIP paths detected' }
+          } finally { $zip.Dispose() }
+          Get-FileHash -Algorithm SHA256 -LiteralPath $archive | Format-List
       - uses: actions/upload-artifact@v4
         with:
           retention-days: 7
