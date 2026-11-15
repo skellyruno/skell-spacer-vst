@@ -5,11 +5,18 @@ on:
     branches: [main]
   pull_request:
 
+# Cancel only superseded PR checks; preserve main/release/manual runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dsp-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Verify published parameter IDs
+        run: python3 tests/parameter_contract_test.py
       - name: DSP tests (original Studio)
         run: |
           g++ -O2 -std=c++17 -I Source tests/dsp_test.cpp -o dsp_test
