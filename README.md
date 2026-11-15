@@ -54,15 +54,21 @@ DSP tests (no JUCE needed, run in CI): `g++ -O2 -std=c++17 -I Source tests/live_
 
 Editor test (optional, headless): `tests/ui_render.sh <JUCE dir> <prebuilt module objects> <out dir>` renders every skin at three window sizes to PNG and checks that knobs, buttons and the band slider drive the parameters, parameter text parsing, and state save/restore. The script header lists the JUCE translation units it needs.
 
-## Compatibility note for previous Skell Spacer versions
+## V16 replaces the unshipped V7 prototype
 
-The V16 filter-bank DSP replaces the earlier optional FFT Studio path. Parameter IDs
-`link` and `liveMode` are kept in the host parameter tree to avoid removing old
-automation/state identifiers, but the V16 mono sidechain does not implement the
-old stereo-link behavior and `liveMode` no longer switches to the earlier Studio engine.
-**Audio from older projects may sound different even though old IDs still load.**
-Do not merge or ship this as a compatible in-place upgrade without testing
-existing FL Studio projects and deciding how to migrate the old mode semantics.
+V16 is the single Skell Spacer engine: an 84-band zero-latency spectral sidechain
+ducker. The old FFT Studio and stereo-link placeholder parameters are retired,
+as V7 was not publicly shipped. No audio or host-state compatibility with V7
+is claimed; Git history preserves the prototype.
+
+## Real-time spectrum visualization
+
+The 4096-point spectrum FFT and frequency-response curve now run only when the
+editor requests them at 30 Hz. The audio callback publishes preallocated atomic
+waveform and filter-gain snapshots, without visualization FFTs, locks or heap
+allocations. Closing the editor doesn't change audio processing. Output on the
+synthetic DSP A/B reference is bit-identical to earlier V16. Concurrent display
+reader and realtime processing regressions cover 44.1/48/96/192 kHz.
 
 ## Install and first test in a DAW
 1. Download the `skell-spacer-vst-Windows-VST3` artifact from the Actions run, unzip it, and copy the `Skell Spacer.vst3` folder to `C:\Program Files\Common Files\VST3`. The runtime is linked statically, so nothing else needs installing.
@@ -75,7 +81,7 @@ The CI job also runs **pluginval** (strictness 5) on the built VST3 and uploads 
 Skell house look: warm black, bone-white kerned type, one accent colour, flat square buttons, corner-bracket cards. Click the logo (top-left) to cycle Bone / Neon / Graveyard / Clean; the choice is saved with the plugin state. The header strip lights up with the deepest current cut.
 
 ## Layout
-- `Source/ZeroLatencyEngine.h` - JUCE-free zero-latency engine (filter bank + bell chain; the FFT there only drives the display)
+- `Source/ZeroLatencyEngine.h` - JUCE-free zero-latency engine (filter bank + bell chain; the FFT runs only when the UI reads the display)
 - `Source/SpacerDSP.h` - parameter block and the FFT used by the spectrum display
 - `Source/PluginProcessor.*` - parameters, sidechain bus, state
 - `Source/SkellTheme.h` - Skell house look (4 skins, bracket cards, spacer mark)
@@ -135,3 +141,11 @@ and adds an actual editor/processor stress test.
 - Added low-level DSP and real processor-host audio regressions to prevent both
   problems returning. These corrections do not restore legacy V7 FFT Studio DSP;
   PR remains experimental pending FL Studio/Windows real-session testing.
+
+
+## V16 verification notes
+- Portable C++ DSP, stress, zero-allocation and concurrent UI snapshot tests at
+  44.1/48/96/192 kHz.
+- Windows VST3 build, level-5 pluginval and actual JUCE renderer tests in CI.
+- FL Studio sidechain routing, in-host CPU and real listening remain independent
+  release checks, not implied by synthetic benchmarks.

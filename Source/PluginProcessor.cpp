@@ -52,12 +52,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
     juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 30.0f,
     AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
 
-  // Legacy automation IDs are intentionally retained for existing FL Studio sessions.
-  // The V16 detector is mono-keyed, so legacy Link is stored but not evaluated.
-  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"link", 1}, "Stereo Link (Legacy)",
-    juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 0.0f,
-    AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
-
   juce::NormalisableRange<float> atk(1.0f, 200.0f, 0.1f);  atk.setSkewForCentre(20.0f);
   juce::NormalisableRange<float> rel(10.0f, 1000.0f, 1.0f); rel.setSkewForCentre(150.0f);
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"attack", 1}, "Attack", atk, 10.0f,
@@ -96,10 +90,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
         return t.containsIgnoreCase("l") ? -v : v; })));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"ms", 1}, "Mid/Side", false));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"listen", 1}, "Listen", false));
-  // Keep the original parameter ID to decode old saved host automation/state.
-  // V16 always runs the zero-latency engine; historical Studio DSP is retired.
-  layout.add(std::make_unique<juce::AudioParameterBool>(
-    juce::ParameterID{"liveMode", 1}, "Live Tracking (Legacy)", true));
   return layout;
 }
 

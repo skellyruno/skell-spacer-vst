@@ -5,7 +5,7 @@
 //   track     --> chain of up to 84 minimum-phase bell filters (one cut per band) --> out
 //
 // Bells whose cut is zero are skipped, so an idle engine returns the input bit-exactly.
-// The FFT here only feeds the spectrum display and is never in the audio path.
+// Spectrum FFT and response visualizations are UI-thread-only; audio publishes atomic snapshots.
 #include <cstdint>
 #include "SpacerDSP.h"
 
@@ -91,20 +91,8 @@ public:
     for (int j = 0; j < nb; ++j) maxCol = std::max(maxCol, col[j]);
     lsStep = 0.9f / (maxRow * maxCol);
 
-    dispFft.init(kDispN);
-    dispWin.resize(kDispN);
-    for (int n = 0; n < kDispN; ++n) dispWin[(size_t)n] = 0.5f - 0.5f * (float)std::cos(2.0 * kPi * n / kDispN);
-    dispRe.assign(kDispN, 0.f); dispIm.assign(kDispN, 0.f);
-    dispTrack.assign(kDispN, 0.f); dispSc.assign(kDispN, 0.f);
-    const double binHz = fs / kDispN;
-    for (int i = 0; i < kDisp; ++i) {
-      auto freq = [](double t) { return 20.0 * std::pow(1000.0, t); };
-      const double t = (double)i / (kDisp - 1), dt = 1.0 / (kDisp - 1);
-      int lo = (int)std::floor(freq(t - 0.5 * dt) / binHz), hi = (int)std::ceil(freq(t + 0.5 * dt) / binHz);
-      lo = std::min(std::max(lo, 1), kDispN / 2);
-      hi = std::min(std::max(hi, lo), kDispN / 2);
-      dispLo[i] = lo; dispHi[i] = hi;
-    }
+    // Display FFT resources initialize lazily on the GUI thread, never in audio.
+    displayRate.store(fs, std::memory_order_release);
     bandDirty = true;
     updateScFilter();
     reset();
@@ -119,10 +107,15 @@ public:
     peak = 0.f;
     stepCount = 0; mix = 0.f; anyActive = false; guardPk = 0.f; guardGain = 1.f;
     phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
-    std::fill(dispTrack.begin(), dispTrack.end(), 0.f);
-    std::fill(dispSc.begin(), dispSc.end(), 0.f);
+    for (int i = 0; i < kDispN; ++i) {
+      dispTrack[i].store(0.f, std::memory_order_relaxed);
+      dispSc[i].store(0.f, std::memory_order_relaxed);
+    }
+    for (int c = 0; c < kMaxCh; ++c)
+      for (int i = 0; i < kBands; ++i)
+        dispApplied[c][i].store(0.f, std::memory_order_relaxed);
     dispPos = 0; dispCount = 0;
-    for (int i = 0; i < kDisp; ++i) { dispMain[i] = -120.f; dispScOut[i] = -120.f; dispCut[i] = 0.f; }
+    displayPublishedPos.store(0, std::memory_order_release);
   }
 
   // Safe to call from the audio thread.
@@ -232,11 +225,51 @@ public:
     }
   }
 
+  // Invoked by the 30 Hz UI timer, not by the realtime audio callback.
+  // Each caller owns its FFT scratch space, so multiple editors never lock.
   void getDisplay(float* mainDb, float* scDb, float* cutOut) const {
+    if (!mainDb || !scDb || !cutOut) return;
+    static thread_local DisplayWorkspace work;
+    const double rate = displayRate.load(std::memory_order_acquire);
+    if (work.fs != rate) work.prepare(rate); // UI-thread-only memory allocation
+    const int pos = displayPublishedPos.load(std::memory_order_acquire);
+    for (int n = 0; n < kDispN; ++n) {
+      const int idx = (pos + n) & (kDispN - 1);
+      work.re[(size_t)n] = dispTrack[(size_t)idx].load(std::memory_order_relaxed) * work.win[(size_t)n];
+      work.im[(size_t)n] = dispSc[(size_t)idx].load(std::memory_order_relaxed) * work.win[(size_t)n];
+    }
+    work.fft.forward(work.re.data(), work.im.data());
+    const float norm = 4.0f / (float)kDispN;
     for (int i = 0; i < kDisp; ++i) {
-      mainDb[i] = dispMain[i].load(std::memory_order_relaxed);
-      scDb[i] = dispScOut[i].load(std::memory_order_relaxed);
-      cutOut[i] = dispCut[i].load(std::memory_order_relaxed);
+      float m = 0.f, sc = 0.f;
+      for (int k = work.lo[i]; k <= work.hi[i]; ++k) {
+        const int j = (kDispN - k) & (kDispN - 1);
+        const float xr = 0.5f * (work.re[(size_t)k] + work.re[(size_t)j]);
+        const float xi = 0.5f * (work.im[(size_t)k] - work.im[(size_t)j]);
+        const float sr = 0.5f * (work.im[(size_t)k] + work.im[(size_t)j]);
+        const float si = -0.5f * (work.re[(size_t)k] - work.re[(size_t)j]);
+        m = std::max(m, (xr*xr + xi*xi) * norm*norm);
+        sc = std::max(sc, (sr*sr + si*si) * norm*norm);
+      }
+      mainDb[i] = 10.f * std::log10(std::max(m, 1e-12f));
+      scDb[i] = 10.f * std::log10(std::max(sc, 1e-12f));
+    }
+    float cut[kMaxCh][kBands];
+    for (int c = 0; c < kMaxCh; ++c)
+      for (int j = 0; j < kBands; ++j)
+        cut[c][j] = dispApplied[c][j].load(std::memory_order_relaxed);
+    for (int i = 0; i < kDisp; ++i) {
+      const float f = 20.f * std::pow(1000.f, (float)i / (float)(kDisp - 1));
+      const float wf = (float)std::tan(kPi * (double)std::min(f, 0.499f * (float)rate) / rate);
+      float deepest = 0.f;
+      for (int c = 0; c < kMaxCh; ++c) {
+        float sum = 0.f;
+        for (int j = 0; j < work.nb; ++j)
+          if (cut[c][j] > 0.f && std::fabs(std::log2(f / work.fc[j])) < 1.5f)
+            sum += bellDb(wf / work.g[j], -cut[c][j], work.q[j]);
+        deepest = std::max(deepest, -sum);
+      }
+      cutOut[i] = deepest;
     }
   }
 
@@ -449,48 +482,55 @@ private:
     }
   }
 
-  // ---- display (runs on the audio thread, never touches the audio path) ----
+  // Audio-thread work is bounded: two lock-free sample stores and one position
+  // publication per sample; the cut gain snapshot is copied every 2048 samples.
   void feedDisplay(float track, float side) {
-    dispTrack[(size_t)dispPos] = track;
-    dispSc[(size_t)dispPos] = side;
+    dispTrack[(size_t)dispPos].store(track, std::memory_order_relaxed);
+    dispSc[(size_t)dispPos].store(side, std::memory_order_relaxed);
     dispPos = (dispPos + 1) & (kDispN - 1);
-    if (++dispCount >= kDispN / 2) { dispCount = 0; publishDisplay(); }
+    if (++dispCount >= kDispN / 2) {
+      dispCount = 0;
+      for (int c = 0; c < kMaxCh; ++c)
+        for (int j = 0; j < kBands; ++j)
+          dispApplied[c][j].store(applied[c][j], std::memory_order_relaxed);
+    }
+    displayPublishedPos.store(dispPos, std::memory_order_release);
   }
 
-  void publishDisplay() {
-    for (int n = 0; n < kDispN; ++n) {
-      const int idx = (dispPos + n) & (kDispN - 1);
-      dispRe[(size_t)n] = dispTrack[(size_t)idx] * dispWin[(size_t)n];
-      dispIm[(size_t)n] = dispSc[(size_t)idx] * dispWin[(size_t)n];
-    }
-    dispFft.forward(dispRe.data(), dispIm.data());
-    const float norm = 4.0f / (float)kDispN;            // Hann: sine amplitude A -> |X| = A*N/4
-    for (int i = 0; i < kDisp; ++i) {
-      float m = 0.f, sc = 0.f;
-      for (int k = dispLo[i]; k <= dispHi[i]; ++k) {
-        const int j = (kDispN - k) & (kDispN - 1);
-        const float xr = 0.5f * (dispRe[(size_t)k] + dispRe[(size_t)j]), xi = 0.5f * (dispIm[(size_t)k] - dispIm[(size_t)j]);
-        const float sr = 0.5f * (dispIm[(size_t)k] + dispIm[(size_t)j]), si = -0.5f * (dispRe[(size_t)k] - dispRe[(size_t)j]);
-        m = std::max(m, (xr * xr + xi * xi) * norm * norm);
-        sc = std::max(sc, (sr * sr + si * si) * norm * norm);
+  // Per-thread scratch, allocated/refreshed by GUI caller; never the DSP path.
+  struct DisplayWorkspace {
+    double fs = 0.0;
+    FFT fft;
+    std::vector<float> win, re, im;
+    float fc[kBands] = {}, g[kBands] = {}, q[kBands] = {};
+    int lo[kDisp] = {}, hi[kDisp] = {}, nb = 0;
+    void prepare(double rate) {
+      fft.init(kDispN);
+      win.resize(kDispN); re.assign(kDispN, 0.f); im.assign(kDispN, 0.f);
+      for (int n = 0; n < kDispN; ++n)
+        win[(size_t)n] = 0.5f - 0.5f * (float)std::cos(2.0 * kPi * n / kDispN);
+      nb = 0;
+      for (int i = 0; i < kBands; ++i) {
+        fc[i] = 20.f * std::exp2(((float)i + 0.5f) / (float)kBandsPerOct);
+        if (fc[i] >= 0.45f * (float)rate) continue;
+        nb = i + 1;
+        g[i] = (float)std::tan(kPi * fc[i] / rate);
+        const float width = fc[i] * (std::exp2(0.5f / (float)kBandsPerOct)
+                                            - std::exp2(-0.5f / (float)kBandsPerOct));
+        q[i] = std::min(kBellQ, g[i] / ((float)kPi / (float)rate * (1.f + g[i]*g[i]) * width));
       }
-      dispMain[i].store(10.f * std::log10(std::max(m, 1e-12f)), std::memory_order_relaxed);
-      dispScOut[i].store(10.f * std::log10(std::max(sc, 1e-12f)), std::memory_order_relaxed);
-    }
-    // the real combined response of the bell chain (deeper of the two sides), not an estimate
-    for (int i = 0; i < kDisp; ++i) {
-      const float f = 20.f * std::pow(1000.f, (float)i / (float)(kDisp - 1));
-      const float wf = warp(f);
-      float deepest = 0.f;
-      for (int c = 0; c < kMaxCh; ++c) {
-        float sum = 0.f;
-        for (int j = 0; j < nb; ++j)
-          if (applied[c][j] > 0.f && std::fabs(std::log2(f / fc[j])) < 1.5f) sum += bellDb(wf / bellG[j], -applied[c][j], bellQ[j]);
-        deepest = std::max(deepest, -sum);
+      const double binHz = rate / kDispN;
+      for (int i = 0; i < kDisp; ++i) {
+        const double t = (double)i / (kDisp - 1), dt = 1.0 / (kDisp - 1);
+        const auto freq = [](double x) { return 20.0 * std::pow(1000.0, x); };
+        int bottom = (int)std::floor(freq(t - .5 * dt) / binHz);
+        int top = (int)std::ceil(freq(t + .5 * dt) / binHz);
+        lo[i] = std::min(std::max(bottom, 1), kDispN / 2);
+        hi[i] = std::min(std::max(top, lo[i]), kDispN / 2);
       }
-      dispCut[i].store(deepest, std::memory_order_relaxed);
+      fs = rate;
     }
-  }
+  };
 
   double fs = 48000.0;
   SpacerParams params;
@@ -509,10 +549,11 @@ private:
   Svf scHp[kMaxCh][2], scLp[kMaxCh][2];
   bool scHpOn = false, scLpOn = false;
 
-  FFT dispFft;
-  std::vector<float> dispWin, dispRe, dispIm, dispTrack, dispSc;
-  int dispPos = 0, dispCount = 0, dispLo[kDisp] = {}, dispHi[kDisp] = {};
-  std::atomic<float> dispMain[kDisp], dispScOut[kDisp], dispCut[kDisp];
+  std::atomic<float> dispTrack[kDispN], dispSc[kDispN];
+  std::atomic<float> dispApplied[kMaxCh][kBands];
+  std::atomic<int> displayPublishedPos { 0 };
+  std::atomic<double> displayRate { 48000.0 };
+  int dispPos = 0, dispCount = 0;
 };
 
 } // namespace skell
