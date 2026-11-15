@@ -319,7 +319,9 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   look->themeIndex = &theme;
 
   setSize(defaultWidth, defaultHeight);
-  setResizable(true, true);
+  // DAW/host resize affordance is sufficient; do not draw JUCE's unthemed
+  // striped corner resizer over the Skell frame (seen in min/default/max PNGs).
+  setResizable(true, false);
   setResizeLimits(defaultWidth * 4 / 5, defaultHeight * 4 / 5, defaultWidth * 2, defaultHeight * 2);
   if (auto* c = getConstrainer()) c->setFixedAspectRatio((double) designWidth / (double) designHeight);
 

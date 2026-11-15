@@ -108,6 +108,32 @@ int main() {
       check(cl > 8.0 && std::fabs(cl - cr) < 0.3, side ? "R-only sidechain ducks both sides equally" : "L-only sidechain ducks both sides equally", cl - cr);
     }
   }
+  { // Opposite-polarity stereo keys must not vanish in a mono detector.
+    auto sc = sine(48000, fs, 1000, 0.4f, 1.f, -1.f);
+    auto in = sine(48000, fs, 1000, 0.2f);
+    ZeroLatencyEngine e; e.prepare(fs); e.setParams(p);
+    run(e, in, &sc, 480);
+    const double cL = -db(amp(in.l, fs, 1000), 0.2);
+    const double cR = -db(amp(in.r, fs, 1000), 0.2);
+    check(cL > 6.0 && std::fabs(cL - cR) < 0.3,
+          "anti-phase stereo key still ducks both channels equally", cL);
+  }
+  { // Key polarity flip: no output spike or block-size dependency.
+    auto sc = sine(96000, fs, 1000, 0.4f), in = sine(96000, fs, 1000, 0.2f);
+    for (size_t i = 48000; i < sc.r.size(); ++i) sc.r[i] = -sc.r[i];
+    ZeroLatencyEngine ea, eb;
+    ea.prepare(fs); eb.prepare(fs); ea.setParams(p); eb.setParams(p);
+    auto fast = in, slow = in;
+    run(ea, fast, &sc, 1); run(eb, slow, &sc, 257);
+    double delta = 0, jump = 0;
+    for (size_t i = 0; i < fast.l.size(); ++i) {
+      delta = std::max(delta, (double)std::abs(fast.l[i]-slow.l[i]));
+      if (i > 0) jump = std::max(jump, (double)std::abs(fast.l[i]-fast.l[i-1]));
+    }
+    check(delta < 1e-6 && jump < 0.10 &&
+          -db(amp(std::vector<float>(fast.l.end()-24000, fast.l.end()), fs, 1000), 0.2) > 5.0,
+          "phase-flipping stereo key: no click, block-independent, recovers ducking", jump);
+  }
   { // pan in L/R mode
     auto in = sine(48000, fs, 1000, 0.2f), sc = sine(48000, fs, 1000, 0.4f);
     for (float pan : { -1.f, 0.f, 1.f }) {

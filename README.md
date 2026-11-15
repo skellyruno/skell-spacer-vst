@@ -108,3 +108,19 @@ Windows VST3 + pluginval passes do not replace real FL Studio checks: host scan,
 mono/stereo sidechain routing, project load/save, automation, knob interactions,
 Listen/bypass, UI scaling, native audio A/B, glitch measurements, and Windows
 CPU/latency profiles remain release requirements.
+
+
+### V16 DSP and UI release corrections
+
+The V16 mono sidechain detector now includes a 20 ms energy-based check for
+strong anti-phase stereo keys and a 50 ms smooth fallback to their side signal.
+This prevents nearly opposite-polarity stereo routing from silently producing
+no ducking, while the original correlated stereo detector output remains
+bit-for-bit unchanged. GCC/Clang DSP, sanitizers, and a zero-allocation
+regression check this path. Real recordings and FL Studio host checks are still
+required before attributing subjective sound-quality improvements.
+
+The editor uses host-managed resizing without the default striped JUCE corner
+grip that appeared over the bottom-right border in actual min/default/max
+screenshots. The one-off V16 UI audit rerenders all four skins at three sizes
+and adds an actual editor/processor stress test.

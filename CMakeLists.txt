@@ -47,4 +47,18 @@ if(SKELL_ENABLE_EDITOR_AUDIT)
     JucePlugin_VersionString=\"${PROJECT_VERSION}\")
   target_link_libraries(SkellSpacerUIAudit PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)
+
+  juce_add_console_app(SkellSpacerUIStress PRODUCT_NAME "SkellSpacerUIStress")
+  juce_generate_juce_header(SkellSpacerUIStress)
+  target_sources(SkellSpacerUIStress PRIVATE
+    tests/stress_ui.cpp Source/PluginProcessor.cpp Source/PluginEditor.cpp
+    Source/PluginProcessor.h Source/PluginEditor.h
+    Source/SpacerDSP.h Source/ZeroLatencyEngine.h Source/SkellTheme.h)
+  target_include_directories(SkellSpacerUIStress PRIVATE Source)
+  target_compile_features(SkellSpacerUIStress PRIVATE cxx_std_17)
+  target_compile_definitions(SkellSpacerUIStress PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_MODAL_LOOPS_PERMITTED=1
+    JucePlugin_VersionString=\"${PROJECT_VERSION}\")
+  target_link_libraries(SkellSpacerUIStress PRIVATE
+    juce::juce_audio_utils juce::juce_audio_processors juce::juce_gui_extra)
 endif()

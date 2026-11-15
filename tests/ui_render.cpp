@@ -95,6 +95,10 @@ int main(int argc, char** argv) {
   proc.setTheme(0);
   std::unique_ptr<juce::AudioProcessorEditor> ed(proc.createEditor());
   ed->setSize(SkellAudioProcessorEditor::defaultWidth, SkellAudioProcessorEditor::defaultHeight);
+  bool hasNativeCorner = false;
+  for (auto* child : ed->getChildren())
+    if (dynamic_cast<juce::ResizableCornerComponent*>(child) != nullptr) hasNativeCorner = true;
+  check(!hasNativeCorner, "no default JUCE striped resize corner covers the Skell UI");
   int rotaries = 0;
   for (auto* c : ed->getChildren())
     if (auto* s = dynamic_cast<juce::Slider*>(c)) if (s->isRotary()) ++rotaries;

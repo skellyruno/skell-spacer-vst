@@ -36,6 +36,10 @@ public:
     mixStep = (float)(1.0 / (0.010 * fs));
     guardDecay = (float)std::exp(-1.0 / (0.010 * fs));
     guardRelease = (float)(1.0 - std::exp(-1.0 / (0.005 * fs)));
+    // Detect strong stereo anti-phase energy, then smoothly adapt the mono key.
+    // Normal correlated L/R sidechains stay numerically unchanged.
+    phaseEnergyCoef = (float)(1.0 - std::exp(-1.0 / (0.020 * fs)));
+    phaseBlendCoef = (float)(1.0 - std::exp(-1.0 / (0.050 * fs)));
     step = fs <= 50000.0 ? 16 : (fs <= 100000.0 ? 32 : 64);
     stepSec = (float)(step / fs);
 
@@ -114,6 +118,7 @@ public:
     for (auto& c : bell) for (auto& b : c) b = Bell();
     peak = 0.f;
     stepCount = 0; mix = 0.f; anyActive = false; guardPk = 0.f; guardGain = 1.f;
+    phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
     std::fill(dispTrack.begin(), dispTrack.end(), 0.f);
     std::fill(dispSc.begin(), dispSc.end(), 0.f);
     dispPos = 0; dispCount = 0;
@@ -160,7 +165,10 @@ public:
     if (mix == 0.f && wantMs != msApplied) { msApplied = wantMs; resetBells(); }   // domain flips only while fully dry (after a 10 ms fade)
     const float target = (params.power && params.amount > 1e-4f && wantMs == msApplied) ? 1.f : 0.f;
     const bool ms = msApplied;
-    if (nSc == 0 && hadSc) { clearAnalysis(); hadSc = false; }
+    if (nSc == 0 && hadSc) {
+      clearAnalysis(); hadSc = false;
+      phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
+    }
     if (nSc > 0) hadSc = true;
 
     for (int i = 0; i < nSamples; ++i) {
@@ -172,7 +180,23 @@ public:
       if (nSc > 0) {
         float s0 = scFilter(0, clean(sc[0][i])), s1 = 0.f;
         if (nSc >= 2) s1 = scFilter(1, clean(sc[1][i]));
-        d = nSc >= 2 ? 0.5f * (s0 + s1) : s0;
+        d = s0;
+        if (nSc >= 2) {
+          // The usual mono key is the mid channel. When stereo key channels
+          // nearly cancel, blend toward the side component over 50 ms.
+          // This avoids sample-by-sample polarity switches and adds no delay.
+          const float mid = 0.5f * (s0 + s1), side = 0.5f * (s0 - s1);
+          phaseMidEnergy += phaseEnergyCoef * (mid * mid - phaseMidEnergy);
+          phaseSideEnergy += phaseEnergyCoef * (side * side - phaseSideEnergy);
+          if (phaseMidEnergy < 1e-20f) phaseMidEnergy = 0.f;
+          if (phaseSideEnergy < 1e-20f) phaseSideEnergy = 0.f;
+          const float desired = phaseSideEnergy > 2.f * phaseMidEnergy && phaseSideEnergy > 1e-12f ? 1.f : 0.f;
+          phaseSideBlend += phaseBlendCoef * (desired - phaseSideBlend);
+          if (std::fabs(phaseSideBlend) < 1e-12f) phaseSideBlend = 0.f;
+          d = mid + (side - mid) * phaseSideBlend;
+        } else {
+          phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
+        }
         if (scOut) { if (scOut[0]) scOut[0][i] = s0; if (nSc >= 2 && scOut[1]) scOut[1][i] = s1; }
         analyse(d);
       }
@@ -469,6 +493,8 @@ private:
   int nb = kBands, step = 16, stepCount = 0;
   float stepSec = 0.f, mix = 0.f, mixStep = 0.002f, peak = 0.f;
   float guardPk = 0.f, guardGain = 1.f, guardDecay = 0.99f, guardRelease = 0.01f;
+  float phaseMidEnergy = 0.f, phaseSideEnergy = 0.f, phaseSideBlend = 0.f;
+  float phaseEnergyCoef = 0.001f, phaseBlendCoef = 0.001f;
   bool msApplied = false, bandDirty = true, anyActive = false, hadSc = false;
   float fc[kBands] = {}, bandWeight[kBands] = {}, bellG[kBands] = {};
   float kernC[kBands][2 * kReach + 1] = {}, kernM[kBands][2 * kReach + 1] = {}, solved[kBands] = {}, lsStep = 0.f;

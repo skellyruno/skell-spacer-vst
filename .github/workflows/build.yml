@@ -25,6 +25,10 @@ jobs:
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/stress_test.cpp -o stress_test
           ./stress_test
+      - name: Zero-allocation audio callback regression
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/realtime_allocation_test.cpp -o realtime_allocation_test
+          ./realtime_allocation_test
   build:
     runs-on: windows-latest
     needs: dsp-tests
@@ -55,7 +59,7 @@ jobs:
       # Not executed on main, release, production or manual builds.
       - name: Build actual JUCE editor audit
         if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
-        run: cmake --build build --config Release --target SkellSpacerUIAudit --parallel 2
+        run: cmake --build build --config Release --target SkellSpacerUIAudit SkellSpacerUIStress --parallel 2
       - name: Render real editor and exercise controls
         if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
         shell: pwsh
@@ -65,6 +69,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path ui-audit | Out-Null
           & $exe.FullName ui-audit
           if ($LASTEXITCODE -ne 0) { throw "Real editor UI audit failed ($LASTEXITCODE)" }
+          $stress = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIStress.exe' | Select-Object -First 1
+          if (-not $stress) { throw 'Compiled JUCE editor stress executable missing' }
+          & $stress.FullName
+          if ($LASTEXITCODE -ne 0) { throw "Real editor stress test failed ($LASTEXITCODE)" }
           $screens = @(Get-ChildItem ui-audit -Filter '*.png')
           if ($screens.Count -lt 15) { throw "Expected 15+ actual editor screenshots; got $($screens.Count)" }
       - uses: actions/upload-artifact@v4
