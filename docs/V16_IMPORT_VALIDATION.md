@@ -19,4 +19,4 @@ The uploaded V16 removes the former `link` and `liveMode` parameters and removes
 
 ## PR scope
 
-This PR adds only a compatibility gate and PR-only CI cancellation. **It does not import V16 DSP/UI source files.** The full source import is still pending. Do not mark the V16 update or Windows VST3 artifact as complete on the strength of this gate alone.
+This draft PR imports the full V16 DSP/UI source tree, new stress tests, and the parameter-ID compatibility gate. The previous `AGENTS.md`, shared SkellCore source snapshot, and repository-specific tooling remain intact. Obsolete `tests/dsp_test.cpp` was removed because its historical FFT engine is retired. Do not merge or mark the VST3 as release-ready until Windows CI, pluginval, real JUCE UI inspections, and old/new FL Studio project audio A/B are verified.
