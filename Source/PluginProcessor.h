@@ -47,5 +47,6 @@ private:
   static constexpr int kChunk = 1024;
   float scMon[2][kChunk] = {};   // the sidechain as the detector hears it (after its filters), for Listen
   float listenMix = 0.f;      // audio thread only: 0 = track, 1 = sidechain monitor
+  float lastMonitor = 0.f;    // decaying detector tail for click-free sidechain bus loss
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SkellAudioProcessor)
 };
