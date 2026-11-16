@@ -5,10 +5,9 @@ on:
     branches: [main]
   pull_request:
 
-# Re-run only superseded PR checks. Main branch and manual release builds are protected.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: \${{ github.workflow }}-\${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
 
 jobs:
   dsp-tests:
@@ -50,21 +49,26 @@ jobs:
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/realtime_allocation_test.cpp -o realtime_allocation_test
           ./realtime_allocation_test
+
   build:
     runs-on: windows-latest
     needs: dsp-tests
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
+        run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=\${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build --config Release --parallel 2
-      - name: Package
+
+      - name: Stage and verify Windows VST3 bundle
         shell: pwsh
         run: |
           $plugin = 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3'
           $binary = "$plugin/Contents/x86_64-win/Skell Spacer.vst3"
+          $moduleInfo = "$plugin/Contents/Resources/moduleinfo.json"
           if (-not (Test-Path $binary)) { throw 'VST3 Windows x64 binary missing' }
+          if (-not (Test-Path $moduleInfo)) { throw 'VST3 moduleinfo.json missing' }
+
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary).Path)
           if ($bytes.Length -lt 4096 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw 'Invalid Windows MZ header' }
           $pe = [System.BitConverter]::ToInt32($bytes, 0x3c)
@@ -72,28 +76,31 @@ jobs:
           if ($bytes[$pe] -ne 0x50 -or $bytes[$pe+1] -ne 0x45 -or $bytes[$pe+2] -ne 0 -or $bytes[$pe+3] -ne 0) { throw 'Invalid PE signature' }
           if ([System.BitConverter]::ToUInt16($bytes, $pe+4) -ne 0x8664 -or
               [System.BitConverter]::ToUInt16($bytes, $pe+24) -ne 0x20b) { throw 'Expected Windows x64 PE32+ binary' }
-          $info = [ordered]@{
-            product = 'Skell Spacer'
-            version = '1.2.0-rc'
-            source_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
-            ci_checkout_commit = $env:GITHUB_SHA
-            platform = 'Windows-x64'
-            vst3_binary_sha256 = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
-            pluginval_verified_in_same_run = $false
-            fl_studio_verified = $false
-            status = 'testing candidate - not public release'
-          }
-          $info | ConvertTo-Json -Depth 3 | Set-Content -Encoding UTF8 build-info.json
-          Compress-Archive -Path $plugin, 'build-info.json' -DestinationPath skell-spacer-vst-Windows-VST3.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          retention-days: 7
-          name: skell-spacer-vst-Windows-VST3
-          path: skell-spacer-vst-Windows-VST3.zip
-          if-no-files-found: error
 
-      # Release-candidate-only real JUCE editor audit (not an everyday screenshot workflow).
-      # Not executed on main, release, production or manual builds.
+          $moduleText = Get-Content -Raw $moduleInfo
+          $nameMatch = [regex]::Match($moduleText, '"Name"\s*:\s*"([^"]+)"')
+          $versionMatch = [regex]::Match($moduleText, '"Version"\s*:\s*"([^"]+)"')
+          $vendorMatch = [regex]::Match($moduleText, '"Vendor"\s*:\s*"([^"]+)"')
+          if (-not $nameMatch.Success -or $nameMatch.Groups[1].Value -ne 'Skell Spacer') { throw 'VST3 module name mismatch' }
+          if (-not $vendorMatch.Success -or $vendorMatch.Groups[1].Value -ne 'Skell Audio') { throw 'VST3 vendor mismatch' }
+          if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw 'VST3 module version missing or invalid' }
+          if ($moduleText -notmatch '"Category"\s*:\s*"Audio Module Class"' -or
+              $moduleText -notmatch '"Category"\s*:\s*"Component Controller Class"') { throw 'Expected VST3 audio and controller classes missing' }
+
+          $dist = Join-Path $PWD 'dist'
+          if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+          New-Item -ItemType Directory -Path $dist | Out-Null
+          Copy-Item -Path $plugin -Destination $dist -Recurse
+          $stagedBundle = Join-Path $dist 'Skell Spacer.vst3'
+          $bundleDirs = @(Get-ChildItem -Path $dist -Directory -Filter '*.vst3' -Recurse)
+          $moduleFiles = @(Get-ChildItem -Path $stagedBundle -File -Filter '*.vst3' -Recurse)
+          $exeFiles = @(Get-ChildItem -Path $dist -File -Filter '*.exe' -Recurse)
+          $zipFiles = @(Get-ChildItem -Path $dist -File -Filter '*.zip' -Recurse)
+          if ($bundleDirs.Count -ne 1) { throw "Expected exactly one VST3 bundle, found $($bundleDirs.Count)" }
+          if ($moduleFiles.Count -ne 1 -or $moduleFiles[0].Name -ne 'Skell Spacer.vst3') { throw "Expected exactly one VST3 module, found $($moduleFiles.Count)" }
+          if ($exeFiles.Count -ne 0) { throw "Unexpected standalone EXE in VST3-only package: $($exeFiles.Count)" }
+          if ($zipFiles.Count -ne 0) { throw "Nested ZIP found in staged package: $($zipFiles.Count)" }
+
       - name: Build actual JUCE editor audit
         if: github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
         run: cmake --build build --config Release --target SkellSpacerUIAudit SkellSpacerUIStress --parallel 2
@@ -116,24 +123,20 @@ jobs:
         if: always() && github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
         with:
           retention-days: 7
-          name: SkellSpacer-V16-Real-Editor-Audit
+          name: SkellSpacer-V17-Real-Editor-Audit
           path: ui-audit/*.png
           if-no-files-found: warn
-      # Host-style check (load, bus layouts, state save/restore, automation, parameter fuzzing, threading).
-      # Runs after the upload so a validator failure never hides the build; the run just goes red.
-      - name: Validate with pluginval
+
+      - name: Validate staged VST3 with pluginval
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval
-          # pluginval_Windows.zip supplies a GUI-subsystem executable. Direct PowerShell
-          # invocation can return before it exits, leaving $LASTEXITCODE unset and
-          # marking a successful validation as failed. Explicitly wait and read ExitCode.
           $validator = (Resolve-Path './pluginval/pluginval.exe').Path
-          $vst3 = (Resolve-Path 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3').Path
+          $stagedBundle = (Resolve-Path 'dist/Skell Spacer.vst3').Path
           New-Item -ItemType Directory -Force -Path pluginval-log | Out-Null
           $logDir = (Resolve-Path './pluginval-log').Path
-          $arguments = "--strictness-level 5 --validate-in-process --output-dir `"$logDir`" `"$vst3`""
+          $arguments = @('--strictness-level', '5', '--validate-in-process', '--output-dir', $logDir, $stagedBundle)
           $validation = Start-Process -FilePath $validator -ArgumentList $arguments -Wait -PassThru -NoNewWindow
           if ($null -eq $validation.ExitCode) { throw 'pluginval finished without an exit code' }
           if ($validation.ExitCode -ne 0) { throw "pluginval failed ($($validation.ExitCode))" }
@@ -144,3 +147,78 @@ jobs:
           name: pluginval-log
           path: pluginval-log
           if-no-files-found: ignore
+
+      - name: Write provenance manifest and checksums
+        shell: pwsh
+        run: |
+          $stagedBundle = Join-Path $PWD 'dist/Skell Spacer.vst3'
+          $binary = Join-Path $stagedBundle 'Contents/x86_64-win/Skell Spacer.vst3'
+          $moduleInfo = Join-Path $stagedBundle 'Contents/Resources/moduleinfo.json'
+          $moduleText = Get-Content -Raw $moduleInfo
+          $nameMatch = [regex]::Match($moduleText, '"Name"\s*:\s*"([^"]+)"')
+          $versionMatch = [regex]::Match($moduleText, '"Version"\s*:\s*"([^"]+)"')
+          $vendorMatch = [regex]::Match($moduleText, '"Vendor"\s*:\s*"([^"]+)"')
+          $urlMatch = [regex]::Match($moduleText, '"URL"\s*:\s*"([^"]*)"')
+          $emailMatch = [regex]::Match($moduleText, '"E-Mail"\s*:\s*"([^"]*)"')
+          $uiAuditEnabled = '\${{ github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' }}' -eq 'true'
+          $uiScreens = @(Get-ChildItem -Path 'ui-audit' -File -Filter '*.png' -ErrorAction SilentlyContinue)
+          if ($uiAuditEnabled -and $uiScreens.Count -lt 15) { throw "Expected 15+ actual JUCE UI screenshots; got $($uiScreens.Count)" }
+
+          $manifest = [ordered]@{
+            product = $nameMatch.Groups[1].Value
+            vendor = $vendorMatch.Groups[1].Value
+            version = $versionMatch.Groups[1].Value
+            candidate_label = 'V17 RC'
+            release_channel = 'preview'
+            source_commit = '\${{ github.event.pull_request.head.sha || github.sha }}'
+            ci_checkout_commit = $env:GITHUB_SHA
+            platform = 'Windows-x64'
+            architecture = 'AMD64'
+            binary_format = 'PE32+'
+            vst3_bundle_path = 'Skell Spacer.vst3'
+            vst3_binary_path = 'Skell Spacer.vst3/Contents/x86_64-win/Skell Spacer.vst3'
+            moduleinfo_path = 'Skell Spacer.vst3/Contents/Resources/moduleinfo.json'
+            vst3_binary_sha256 = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+            moduleinfo_sha256 = (Get-FileHash $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
+            portable_dsp_tests_verified_in_same_run = $true
+            realtime_allocation_test_verified_in_same_run = $true
+            cpu_matrix_generated_in_same_run = $true
+            offline_audio_render_generated_in_same_run = $true
+            windows_juce_editor_audit_verified_in_same_run = ($uiAuditEnabled -and $uiScreens.Count -ge 15)
+            ui_screenshot_count = $uiScreens.Count
+            pluginval_verified_in_same_run = $true
+            pluginval_strictness_level = 5
+            fl_studio_verified = $false
+            quick4_local_renderer_verified = $false
+            vendor_url_configured = ($urlMatch.Success -and $urlMatch.Groups[1].Value.Length -gt 0)
+            support_email_configured = ($emailMatch.Success -and $emailMatch.Groups[1].Value.Length -gt 0)
+            licensing_review_verified = $false
+            installer_verified = $false
+            updater_rollback_verified = $false
+            storefront_verified = $false
+            commercial_release_eligible = $false
+            status = 'PREVIEW_ONLY'
+            release_blockers = @(
+              'FL Studio VST3 scan, sidechain routing, save/reopen and automation acceptance not yet performed',
+              'Repository-specific local Quick4 renderer is not yet wired or verified',
+              'Vendor URL and support email are empty in current VST3 module metadata',
+              'Licensing/attribution, installer/updater rollback and storefront approval remain outstanding'
+            )
+          }
+          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $PWD 'dist/build-info.json')
+
+          $hashLines = @(
+            "$((Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant())  Skell Spacer.vst3/Contents/x86_64-win/Skell Spacer.vst3"
+            "$((Get-FileHash $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant())  Skell Spacer.vst3/Contents/Resources/moduleinfo.json"
+            "$((Get-FileHash (Join-Path $PWD 'dist/build-info.json') -Algorithm SHA256).Hash.ToLowerInvariant())  build-info.json"
+          )
+          $hashLines | Set-Content -Encoding ascii (Join-Path $PWD 'dist/SHA256SUMS.txt')
+          $nestedArchives = @(Get-ChildItem -Path 'dist' -File -Filter '*.zip' -Recurse)
+          if ($nestedArchives.Count -ne 0) { throw 'Nested ZIP must not be included in final artifact' }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          retention-days: 7
+          name: skell-spacer-vst-Windows-VST3
+          path: dist/
+          if-no-files-found: error
