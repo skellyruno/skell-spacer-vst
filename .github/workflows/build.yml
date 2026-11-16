@@ -75,7 +75,8 @@ jobs:
           $info = [ordered]@{
             product = 'Skell Spacer'
             version = '1.2.0-rc'
-            source_commit = $env:GITHUB_SHA
+            source_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
+            ci_checkout_commit = $env:GITHUB_SHA
             platform = 'Windows-x64'
             vst3_binary_sha256 = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
             pluginval_verified_in_same_run = $false
