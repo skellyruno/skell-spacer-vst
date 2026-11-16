@@ -120,7 +120,7 @@ jobs:
           $screens = @(Get-ChildItem ui-audit -Filter '*.png')
           if ($screens.Count -lt 15) { throw "Expected 15+ actual editor screenshots; got $($screens.Count)" }
       - uses: actions/upload-artifact@v4
-        if: always() && github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
+        if: always() && github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116')
         with:
           retention-days: 7
           name: SkellSpacer-V17-Real-Editor-Audit
