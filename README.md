@@ -54,6 +54,14 @@ DSP tests (no JUCE needed, run in CI): `g++ -O2 -std=c++17 -I Source tests/live_
 
 Editor test (optional, headless): `tests/ui_render.sh <JUCE dir> <prebuilt module objects> <out dir>` renders every skin at three window sizes to PNG and checks that knobs, buttons and the band slider drive the parameters, parameter text parsing, and state save/restore. The script header lists the JUCE translation units it needs.
 
+## V17 release candidate: V16 engine, host and sound validation
+
+The first V17 RC retains V16's 84-band filter-bank algorithm and zero-added-latency
+path. It fixes Listen's abrupt transition when the sidechain bus disappears, adds
+host-style tests for the bus transition and 125/150% JUCE screenshots, measures
+real-time block-time distributions, and prepares a reproducible FL Studio test kit.
+No subjective improvement is claimed without listening tests on real tracks.
+
 ## V16 replaces the unshipped V7 prototype
 
 V16 is the single Skell Spacer engine: an 84-band zero-latency spectral sidechain

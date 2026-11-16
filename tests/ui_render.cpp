@@ -226,6 +226,50 @@ int main(int argc, char** argv) {
     for (int k = 0; k < 4; ++k) { fill(); lp.processBlock(b, mi); }
     check(std::abs(b.getSample(0, 4799)) < 0.01f, "Listen plays the filtered sidechain (DC removed by the high-pass)");
   }
+  { // A host may disable the sidechain bus while Listen is active.
+    // Regression: changing bus layouts must crossfade rather than jump.
+    SkellAudioProcessor p; p.enableAllBuses();
+    p.setRateAndBufferSizeDetails(48000.0, 512); p.prepareToPlay(48000.0, 512);
+    p.parameters.getParameter("power")->setValueNotifyingHost(0.f);
+    p.parameters.getParameter("listen")->setValueNotifyingHost(1.f);
+    juce::MidiBuffer midi; juce::AudioBuffer<float> b(4, 512);
+    for (int block = 0; block < 14; ++block) {
+      for (int i = 0; i < 512; ++i) {
+        b.setSample(0,i,0.5f); b.setSample(1,i,0.5f);
+        b.setSample(2,i,-0.25f); b.setSample(3,i,-0.25f);
+      }
+      p.processBlock(b, midi);
+    }
+    const float previous = b.getSample(0, 511);
+    const bool changed = p.disableNonMainBuses();
+    juce::AudioBuffer<float> noKey(2, 1024);
+    noKey.clear();
+    for (int i = 0; i < 1024; ++i) {
+      noKey.setSample(0,i,0.5f); noKey.setSample(1,i,0.5f);
+    }
+    p.processBlock(noKey, midi);
+    const float first = noKey.getSample(0, 0);
+    float worst = std::abs(first - previous);
+    for (int i = 1; i < 1024; ++i)
+      worst = juce::jmax(worst, std::abs(noKey.getSample(0,i) - noKey.getSample(0,i-1)));
+    check(changed && std::abs(previous + 0.25f) < 1e-3f &&
+          worst < 0.012f && std::abs(noKey.getSample(0,1023) - 0.5f) < 1e-3f,
+          "Listen safely crossfades when host removes the sidechain bus (worst step "
+          + juce::String(worst,4) + ")");
+  }
+  // Additional actual JUCE screenshots at 125% and 150% display scaling.
+  {
+    proc.setTheme(1);
+    std::unique_ptr<juce::AudioProcessorEditor> dpi(proc.createEditor());
+    dpi->setSize(550,450); pump();
+    for (float factor : {1.25f,1.50f}) {
+      const auto img=dpi->createComponentSnapshot(dpi->getLocalBounds(),true,factor);
+      const juce::String name = factor < 1.3f ? "neon_dpi125" : "neon_dpi150";
+      check(!img.isNull() && img.getWidth() >= 550,
+            "real JUCE editor captures at " + name);
+      savePng(img,outDir.getChildFile(name+".png"));
+    }
+  }
   // band slider: real mouse drag on the low thumb, then on the high thumb
   auto* band = find<juce::Slider>(*ed, [](juce::Slider& s) { return s.getSliderStyle() == juce::Slider::TwoValueHorizontal; });
   check(band != nullptr, "band slider present");

@@ -99,6 +99,7 @@ void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
   sidechainHold = 0;
   sidechainActive.store(false);
   listenMix = 0.f;
+  lastMonitor = 0.f;
 }
 
 void SkellAudioProcessor::readSpectrum(float* mainDb, float* sideDb, float* cutDb) const {
@@ -157,24 +158,30 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   sidechainActive.store(sidechainHold > 0, std::memory_order_relaxed);
 
   // Listen: monitor the sidechain (as the detector hears it, after its filters) instead of the track, with a 10 ms
-  // crossfade; nothing happens without a sidechain. Work in fixed chunks so the monitor copy needs no allocation.
+  // crossfade; when a host drops the bus, fade the detector tail to dry rather
+  // than instantly jumping back to the track. Work in fixed chunks; no allocation.
   const float listenTarget = (pListen->load() > 0.5f && nSc > 0) ? 1.f : 0.f;
-  if (nSc == 0) listenMix = 0.f;
   const float listenStep = (float) (1.0 / (0.010 * juce::jmax(1000.0, sampleRateHz.load())));
+  const float tailDecay = (float) std::exp(-1.0 / (0.004 * juce::jmax(1000.0, sampleRateHz.load())));
   for (int pos = 0; pos < n; pos += kChunk) {
     const int m = juce::jmin(kChunk, n - pos);
     float* chunk[2] = { nMain > 0 ? mainPtrs[0] + pos : nullptr, nMain > 1 ? mainPtrs[1] + pos : nullptr };
     const float* scChunk[2] = { nSc > 0 ? scPtrs[0] + pos : nullptr, nSc > 1 ? scPtrs[1] + pos : nullptr };
     float* mon[2] = { scMon[0], scMon[1] };
     engine.process(chunk, scChunk, nMain, nSc, m, mon);
-    if (nSc == 0 || (listenMix == listenTarget && listenTarget == 0.f)) continue;
+    if (listenMix == 0.f && listenTarget == 0.f) continue;
     for (int i = 0; i < m; ++i) {
-      listenMix = listenMix < listenTarget ? juce::jmin(listenTarget, listenMix + listenStep) : juce::jmax(listenTarget, listenMix - listenStep);
-      for (int c = 0; c < nMain; ++c) {
-        // Listen hears the exact mono key feeding analyse(), including anti-phase recovery.
-        const float s = scMon[0][i];
-        chunk[c][i] += (s - chunk[c][i]) * listenMix;
+      // Preserve the previous sample across a sudden host bus disconnect.
+      const float s = nSc > 0 ? scMon[0][i] : lastMonitor;
+      if (nSc > 0) lastMonitor = s;
+      else {
+        lastMonitor *= tailDecay;
+        if (std::abs(lastMonitor) < 1.0e-12f) lastMonitor = 0.f;
       }
+      listenMix = listenMix < listenTarget ? juce::jmin(listenTarget, listenMix + listenStep)
+                                           : juce::jmax(listenTarget, listenMix - listenStep);
+      for (int c = 0; c < nMain; ++c)
+        chunk[c][i] += (s - chunk[c][i]) * listenMix;
     }
   }
 }

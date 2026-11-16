@@ -25,6 +25,23 @@ jobs:
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -pthread -I Source tests/display_rt_test.cpp -o display_rt_test
           ./display_rt_test
+      - name: Repeatable block-time profiling (UI open and closed)
+        run: |
+          g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -pthread -I Source tests/performance_matrix.cpp -o performance_matrix
+          mkdir -p quality-artifacts
+          ./performance_matrix > quality-artifacts/cpu_profile.csv
+          cat quality-artifacts/cpu_profile.csv
+      - name: Offline DSP sound check with 15-second dry/key/processed WAVs
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/audio_render.cpp -o audio_render
+          mkdir -p quality-artifacts
+          ./audio_render quality-artifacts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkellSpacer-V17-DSP-Audio-and-CPU
+          retention-days: 7
+          path: quality-artifacts/
+          if-no-files-found: error
       - name: Stress test
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/stress_test.cpp -o stress_test
@@ -46,12 +63,28 @@ jobs:
         shell: pwsh
         run: |
           $plugin = 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3'
-          if (-not (Test-Path $plugin)) {
-            Get-ChildItem -Path build -Recurse -Filter '*.vst3' | ForEach-Object FullName
-            throw 'VST3 bundle missing'
+          $binary = "$plugin/Contents/x86_64-win/Skell Spacer.vst3"
+          if (-not (Test-Path $binary)) { throw 'VST3 Windows x64 binary missing' }
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary).Path)
+          if ($bytes.Length -lt 4096 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw 'Invalid Windows MZ header' }
+          $pe = [System.BitConverter]::ToInt32($bytes, 0x3c)
+          if ($pe -lt 64 -or $pe -gt ($bytes.Length - 26)) { throw 'Invalid PE offset' }
+          if ($bytes[$pe] -ne 0x50 -or $bytes[$pe+1] -ne 0x45 -or $bytes[$pe+2] -ne 0 -or $bytes[$pe+3] -ne 0) { throw 'Invalid PE signature' }
+          if ([System.BitConverter]::ToUInt16($bytes, $pe+4) -ne 0x8664 -or
+              [System.BitConverter]::ToUInt16($bytes, $pe+24) -ne 0x20b) { throw 'Expected Windows x64 PE32+ binary' }
+          $info = [ordered]@{
+            product = 'Skell Spacer'
+            version = '1.2.0-rc'
+            source_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
+            ci_checkout_commit = $env:GITHUB_SHA
+            platform = 'Windows-x64'
+            vst3_binary_sha256 = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+            pluginval_verified_in_same_run = $false
+            fl_studio_verified = $false
+            status = 'testing candidate - not public release'
           }
-          if (-not (Test-Path "$plugin/Contents/x86_64-win/Skell Spacer.vst3")) { throw 'VST3 binary missing inside the bundle' }
-          Compress-Archive -Path $plugin -DestinationPath skell-spacer-vst-Windows-VST3.zip
+          $info | ConvertTo-Json -Depth 3 | Set-Content -Encoding UTF8 build-info.json
+          Compress-Archive -Path $plugin, 'build-info.json' -DestinationPath skell-spacer-vst-Windows-VST3.zip
       - uses: actions/upload-artifact@v4
         with:
           retention-days: 7
@@ -62,10 +95,10 @@ jobs:
       # Release-candidate-only real JUCE editor audit (not an everyday screenshot workflow).
       # Not executed on main, release, production or manual builds.
       - name: Build actual JUCE editor audit
-        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        if: github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
         run: cmake --build build --config Release --target SkellSpacerUIAudit SkellSpacerUIStress --parallel 2
       - name: Render real editor and exercise controls
-        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        if: github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
@@ -80,7 +113,7 @@ jobs:
           $screens = @(Get-ChildItem ui-audit -Filter '*.png')
           if ($screens.Count -lt 15) { throw "Expected 15+ actual editor screenshots; got $($screens.Count)" }
       - uses: actions/upload-artifact@v4
-        if: always() && github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        if: always() && github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
         with:
           retention-days: 7
           name: SkellSpacer-V16-Real-Editor-Audit

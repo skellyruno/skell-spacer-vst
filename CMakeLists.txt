@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.22)
 # Static MSVC runtime: the VST3 then loads on a Windows machine without the Visual C++ redistributable installed.
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-project(SkellSpacer VERSION 1.1.0 LANGUAGES C CXX)
+project(SkellSpacer VERSION 1.2.0 LANGUAGES C CXX)
 include(FetchContent)
 if(DEFINED JUCE_PATH AND EXISTS "${JUCE_PATH}/CMakeLists.txt")
   add_subdirectory("${JUCE_PATH}" JUCE)
