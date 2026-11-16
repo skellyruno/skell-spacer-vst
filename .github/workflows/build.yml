@@ -102,10 +102,10 @@ jobs:
           if ($zipFiles.Count -ne 0) { throw "Nested ZIP found in staged package: $($zipFiles.Count)" }
 
       - name: Build actual JUCE editor audit
-        if: github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
+        if: github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116')
         run: cmake --build build --config Release --target SkellSpacerUIAudit SkellSpacerUIStress --parallel 2
       - name: Render real editor and exercise controls
-        if: github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115'
+        if: github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116')
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
@@ -160,7 +160,7 @@ jobs:
           $vendorMatch = [regex]::Match($moduleText, '"Vendor"\s*:\s*"([^"]+)"')
           $urlMatch = [regex]::Match($moduleText, '"URL"\s*:\s*"([^"]*)"')
           $emailMatch = [regex]::Match($moduleText, '"E-Mail"\s*:\s*"([^"]*)"')
-          $uiAuditEnabled = '${{ github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' }}' -eq 'true'
+          $uiAuditEnabled = '${{ github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116') }}' -eq 'true'
           $uiScreens = @(Get-ChildItem -Path 'ui-audit' -File -Filter '*.png' -ErrorAction SilentlyContinue)
           if ($uiAuditEnabled -and $uiScreens.Count -lt 15) { throw "Expected 15+ actual JUCE UI screenshots; got $($uiScreens.Count)" }
           $vendorUrlConfigured = ($urlMatch.Success -and $urlMatch.Groups[1].Value.Length -gt 0)
