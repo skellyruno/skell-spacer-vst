@@ -136,7 +136,7 @@ jobs:
           $stagedBundle = (Resolve-Path 'dist/Skell Spacer.vst3').Path
           New-Item -ItemType Directory -Force -Path pluginval-log | Out-Null
           $logDir = (Resolve-Path './pluginval-log').Path
-          $arguments = @('--strictness-level', '5', '--validate-in-process', '--output-dir', $logDir, $stagedBundle)
+          $arguments = '--strictness-level 5 --validate-in-process --output-dir "' + $logDir + '" "' + $stagedBundle + '"'
           $validation = Start-Process -FilePath $validator -ArgumentList $arguments -Wait -PassThru -NoNewWindow
           if ($null -eq $validation.ExitCode) { throw 'pluginval finished without an exit code' }
           if ($validation.ExitCode -ne 0) { throw "pluginval failed ($($validation.ExitCode))" }
@@ -163,6 +163,17 @@ jobs:
           $uiAuditEnabled = '${{ github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' }}' -eq 'true'
           $uiScreens = @(Get-ChildItem -Path 'ui-audit' -File -Filter '*.png' -ErrorAction SilentlyContinue)
           if ($uiAuditEnabled -and $uiScreens.Count -lt 15) { throw "Expected 15+ actual JUCE UI screenshots; got $($uiScreens.Count)" }
+          $vendorUrlConfigured = ($urlMatch.Success -and $urlMatch.Groups[1].Value.Length -gt 0)
+          $supportEmailConfigured = ($emailMatch.Success -and $emailMatch.Groups[1].Value.Length -gt 0)
+          $releaseBlockers = @(
+            'FL Studio VST3 scan, sidechain routing, save/reopen and automation acceptance not yet performed',
+            'Repository-specific local Quick4 renderer is not yet wired or verified',
+            'User listening approval for real vocal/beat A/B is still required',
+            'CI CPU profile is not a measurement on the owner target hardware',
+            'Licensing/attribution, installer/updater rollback and storefront approval remain outstanding'
+          )
+          if (-not $vendorUrlConfigured) { $releaseBlockers += 'Vendor URL is empty in current VST3 module metadata' }
+          if (-not $supportEmailConfigured) { $releaseBlockers += 'Support email is empty in current VST3 module metadata' }
 
           $manifest = [ordered]@{
             product = $nameMatch.Groups[1].Value
@@ -190,20 +201,18 @@ jobs:
             pluginval_strictness_level = 5
             fl_studio_verified = $false
             quick4_local_renderer_verified = $false
-            vendor_url_configured = ($urlMatch.Success -and $urlMatch.Groups[1].Value.Length -gt 0)
-            support_email_configured = ($emailMatch.Success -and $emailMatch.Groups[1].Value.Length -gt 0)
+            vendor_url_configured = $vendorUrlConfigured
+            support_email_configured = $supportEmailConfigured
+            user_audio_ab_approved = $false
+            target_hardware_cpu_verified = $false
+            host_state_reopen_verified = $false
             licensing_review_verified = $false
             installer_verified = $false
             updater_rollback_verified = $false
             storefront_verified = $false
             commercial_release_eligible = $false
             status = 'PREVIEW_ONLY'
-            release_blockers = @(
-              'FL Studio VST3 scan, sidechain routing, save/reopen and automation acceptance not yet performed',
-              'Repository-specific local Quick4 renderer is not yet wired or verified',
-              'Vendor URL and support email are empty in current VST3 module metadata',
-              'Licensing/attribution, installer/updater rollback and storefront approval remain outstanding'
-            )
+            release_blockers = $releaseBlockers
           }
           $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $PWD 'dist/build-info.json')
 
