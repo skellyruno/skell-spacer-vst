@@ -6,8 +6,8 @@ on:
   pull_request:
 
 concurrency:
-  group: \${{ github.workflow }}-\${{ github.event.pull_request.number || github.run_id }}
-  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   dsp-tests:
@@ -56,7 +56,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=\${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
+        run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build --config Release --parallel 2
 
@@ -160,7 +160,7 @@ jobs:
           $vendorMatch = [regex]::Match($moduleText, '"Vendor"\s*:\s*"([^"]+)"')
           $urlMatch = [regex]::Match($moduleText, '"URL"\s*:\s*"([^"]*)"')
           $emailMatch = [regex]::Match($moduleText, '"E-Mail"\s*:\s*"([^"]*)"')
-          $uiAuditEnabled = '\${{ github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' }}' -eq 'true'
+          $uiAuditEnabled = '${{ github.event_name == 'pull_request' && github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' }}' -eq 'true'
           $uiScreens = @(Get-ChildItem -Path 'ui-audit' -File -Filter '*.png' -ErrorAction SilentlyContinue)
           if ($uiAuditEnabled -and $uiScreens.Count -lt 15) { throw "Expected 15+ actual JUCE UI screenshots; got $($uiScreens.Count)" }
 
@@ -170,7 +170,7 @@ jobs:
             version = $versionMatch.Groups[1].Value
             candidate_label = 'V17 RC'
             release_channel = 'preview'
-            source_commit = '\${{ github.event.pull_request.head.sha || github.sha }}'
+            source_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
             ci_checkout_commit = $env:GITHUB_SHA
             platform = 'Windows-x64'
             architecture = 'AMD64'
