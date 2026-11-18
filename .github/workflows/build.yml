@@ -16,6 +16,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Verify compatibility parameter IDs
         run: python3 tests/parameter_contract_test.py
+      - name: Strict VST3 moduleinfo normalizer regression
+        run: python3 tests/moduleinfo_normalizer_test.py
       - name: DSP tests (zero-latency engine)
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/live_dsp_test.cpp -o live_dsp_test
@@ -55,6 +57,9 @@ jobs:
     needs: dsp-tests
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Configure
         run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
       - name: Build
@@ -68,6 +73,13 @@ jobs:
           $moduleInfo = "$plugin/Contents/Resources/moduleinfo.json"
           if (-not (Test-Path $binary)) { throw 'VST3 Windows x64 binary missing' }
           if (-not (Test-Path $moduleInfo)) { throw 'VST3 moduleinfo.json missing' }
+
+          & python tools/normalize_vst3_moduleinfo.py --file $moduleInfo --expected-name 'Skell Spacer' --expected-vendor 'Skell Audio'
+          if ($LASTEXITCODE -ne 0) { throw 'Strict VST3 moduleinfo normalization/validation failed' }
+          $metadata = Get-Content -Raw $moduleInfo | ConvertFrom-Json -ErrorAction Stop
+          if ($metadata.Name -ne 'Skell Spacer' -or $metadata.'Factory Info'.Vendor -ne 'Skell Audio') {
+            throw 'Strictly parsed VST3 module identity mismatch'
+          }
 
           $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary).Path)
           if ($bytes.Length -lt 4096 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw 'Invalid Windows MZ header' }
