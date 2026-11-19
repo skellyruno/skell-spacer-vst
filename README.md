@@ -79,12 +79,36 @@ synthetic DSP A/B reference is bit-identical to earlier V16. Concurrent display
 reader and realtime processing regressions cover 44.1/48/96/192 kHz.
 
 ## Install and first test in a DAW
-1. Download the `skell-spacer-vst-Windows-VST3` artifact from the Actions run, unzip it, and copy the `Skell Spacer.vst3` folder to `C:\Program Files\Common Files\VST3`. The runtime is linked statically, so nothing else needs installing.
-2. Rescan plugins in the host. Put Skell Spacer on the track that should make room, and route the key (vocal) into its **Sidechain** input. The sidechain bus is off until the host enables it, and the status line reads `NO SIDECHAIN` until audio arrives. In FL Studio, route the vocal's mixer track to the beat's track and pick it as the plugin's sidechain input in the plugin wrapper settings (exact menu names vary by FL version; not yet verified here).
-3. Things worth checking: the status line turns `SIDECHAIN OK`, ducking follows the vocal, Listen plays the vocal, automation of the knobs works, and a saved project restores all settings.
 
-The CI job also runs **pluginval** (strictness 5) on the built VST3 and uploads its log.
+The Windows artifact is an **unsigned unreleased preview**, not a commercial release. Close FL Studio and other hosts before installing.
 
+1. Extract the complete ZIP to a writable folder. Do not copy only the `.vst3` bundle; the installer validates the package manifest, provenance, notices and checksums.
+2. Preview the operation without changing files:
+
+   ```powershell
+   pwsh -NoProfile -File .\Install-SkellSpacerPreview.ps1 -PackageRoot . -WhatIf
+   ```
+
+3. Install per-user (no administrator rights, machine-wide Program Files writes or registry changes):
+
+   ```powershell
+   pwsh -NoProfile -File .\Install-SkellSpacerPreview.ps1 -PackageRoot .
+   ```
+
+   The default VST3 destination is `%LOCALAPPDATA%\Programs\Common\VST3`. A previous Skell Spacer bundle is copied to the separate per-user backup root and hash-verified before the new bundle is swapped in.
+
+4. Rescan VST3 plugins in the DAW. In FL Studio, route the vocal/key mixer track to the beat/target track and enable the sidechain input in the plugin wrapper. Exact menu labels vary by FL Studio version; this route is **not yet host-verified**.
+5. Confirm the status changes from `NO SIDECHAIN` to `SIDECHAIN OK`, then check Amount, Smooth, Pan, L/R–M/S, Attack/Release, Listen, Freeze and Power. Save a disposable test project, close it, reopen it, and confirm the same routing and parameter values.
+
+To validate rollback without changing the installation, use `-Rollback -WhatIf`. To restore the previous verified version, close the host and run:
+
+```powershell
+pwsh -NoProfile -File .\Install-SkellSpacerPreview.ps1 -Rollback
+```
+
+The newer bundle is preserved as a forward backup. If the installed bundle has changed since the installer recorded it, rollback refuses to overwrite it. `-SelfTest` runs the installer/update/rollback regression suite in temporary directories.
+
+The installer is **Windows x64 VST3 only**. It does not install a standalone application, alter host projects, or claim FL Studio acceptance. Keep the existing V7 project compatibility limitation in mind: V16/V17 is not sound-compatible with legacy V7 projects.
 ## Look
 Skell house look: warm black, bone-white kerned type, one accent colour, flat square buttons, corner-bracket cards. Click the logo (top-left) to cycle Bone / Neon / Graveyard / Clean; the choice is saved with the plugin state. The header strip lights up with the deepest current cut.
 
@@ -97,7 +121,10 @@ Skell house look: warm black, bone-white kerned type, one accent colour, flat sq
 - `tests/` - DSP, stress and headless editor tests
 
 ## Status
-DSP and headless editor tests pass (JUCE 8.0.12 on Linux), and the plugin sources compile with no warnings under GCC and Clang at `-Wall -Wextra -Wshadow -Wconversion`. The Windows VST3 build itself has not been run here, so check the first CI build (it includes a pluginval pass) and the plugin in a real host. The plugin code is `Sk02` (manufacturer `SkAu`).
+
+V17 RC exact-head commit `2c2f30d1857af5de5d4877bb89139e01a0f40e29` passed the Windows x64 Release VST3 build, strict package identity checks and pluginval strictness 5 in Actions run [#44467967152](https://github.com/skellyruno/skell-spacer-vst/actions/runs/44467967152). The paired portable DSP suite also passed. The baseline package is a unreleased preview; it is not FL Studio acceptance or commercial release approval.
+
+A separate draft release branch adds a per-user Windows installer with verified backup, update and rollback. Its exact-head installer tests must pass before the installer flags are set in the package manifest. FL Studio sidechain routing, host state reopen, target-hardware CPU/latency, real vocal/beat A/B, local Quick4 capture, licensing, vendor URL, support email and storefront remain separate gates.
 
 ## Known behaviour
 - Resolution is 1/8 octave: a tone ducks the track about 24 dB at its own frequency, about 20 dB a quarter-octave away, 11 dB at half an octave and almost nothing beyond. Broadband material is ducked about 24-25 dB across the whole range.
