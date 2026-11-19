@@ -160,49 +160,80 @@ jobs:
           path: pluginval-log
           if-no-files-found: ignore
 
-      - name: Write provenance manifest and checksums
+      - name: Stage private-preview installer and notices
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath 'scripts/Install-SkellSpacerPreview.ps1' -Destination 'dist/Install-SkellSpacerPreview.ps1'
+          Copy-Item -LiteralPath 'docs/WINDOWS-VST3-INSTALL.md' -Destination 'dist/WINDOWS-VST3-INSTALL.md'
+          Copy-Item -LiteralPath 'docs/THIRD_PARTY_NOTICES.md' -Destination 'dist/THIRD_PARTY_NOTICES.md'
+
+      - name: Write provisional provenance and checksums
         shell: pwsh
         run: |
           $stagedBundle = Join-Path $PWD 'dist/Skell Spacer.vst3'
           $binary = Join-Path $stagedBundle 'Contents/x86_64-win/Skell Spacer.vst3'
           $moduleInfo = Join-Path $stagedBundle 'Contents/Resources/moduleinfo.json'
-          $moduleText = Get-Content -Raw $moduleInfo
-          $nameMatch = [regex]::Match($moduleText, '"Name"\s*:\s*"([^"]+)"')
-          $versionMatch = [regex]::Match($moduleText, '"Version"\s*:\s*"([^"]+)"')
-          $vendorMatch = [regex]::Match($moduleText, '"Vendor"\s*:\s*"([^"]+)"')
-          $urlMatch = [regex]::Match($moduleText, '"URL"\s*:\s*"([^"]*)"')
-          $emailMatch = [regex]::Match($moduleText, '"E-Mail"\s*:\s*"([^"]*)"')
-          $uiAuditEnabled = '${{ github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116') }}' -eq 'true'
+          $module = Get-Content -Raw $moduleInfo | ConvertFrom-Json -ErrorAction Stop
+          $factory = $module.'Factory Info'
+          $classIds = @($module.Classes | ForEach-Object { ([string]$_.CID).ToLowerInvariant() } | Sort-Object)
+          $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+          $moduleHash = (Get-FileHash -LiteralPath $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
+          $vendorUrl = [string]$factory.URL
+          $supportEmail = [string]$factory.'E-Mail'
+          $vendorUrlConfigured = $vendorUrl -match '^https://\S+$'
+          $supportEmailConfigured = $supportEmail -match '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+          $uiAuditEnabled = '\${{ github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116') }}' -eq 'true'
           $uiScreens = @(Get-ChildItem -Path 'ui-audit' -File -Filter '*.png' -ErrorAction SilentlyContinue)
           if ($uiAuditEnabled -and $uiScreens.Count -lt 15) { throw "Expected 15+ actual JUCE UI screenshots; got $($uiScreens.Count)" }
-          $vendorUrlConfigured = ($urlMatch.Success -and $urlMatch.Groups[1].Value.Length -gt 0)
-          $supportEmailConfigured = ($emailMatch.Success -and $emailMatch.Groups[1].Value.Length -gt 0)
+
+          $commercialBlockers = @('Commercial license/attribution review and owner approval remain outstanding')
+          if (-not $vendorUrlConfigured) { $commercialBlockers += 'Vendor URL is not configured in VST3 module metadata' }
+          if (-not $supportEmailConfigured) { $commercialBlockers += 'Support email is not configured in VST3 module metadata' }
           $releaseBlockers = @(
             'FL Studio VST3 scan, sidechain routing, save/reopen and automation acceptance not yet performed',
             'Repository-specific local Quick4 renderer is not yet wired or verified',
             'User listening approval for real vocal/beat A/B is still required',
             'CI CPU profile is not a measurement on the owner target hardware',
-            'Licensing/attribution, installer/updater rollback and storefront approval remain outstanding'
+            'Installer/update/rollback tests have not yet run',
+            'Commercial licensing/attribution and storefront approval remain outstanding'
           )
           if (-not $vendorUrlConfigured) { $releaseBlockers += 'Vendor URL is empty in current VST3 module metadata' }
           if (-not $supportEmailConfigured) { $releaseBlockers += 'Support email is empty in current VST3 module metadata' }
 
           $manifest = [ordered]@{
-            product = $nameMatch.Groups[1].Value
-            vendor = $vendorMatch.Groups[1].Value
-            version = $versionMatch.Groups[1].Value
+            schema_version = 1
+            product = $module.Name
+            vendor = $factory.Vendor
+            version = $module.Version
             candidate_label = 'V17 RC'
             release_channel = 'preview'
-            source_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
+            format = 'VST3'
+            platform = 'windows-x64'
+            release_status = 'preview-only'
+            source_commit = '\${{ github.event.pull_request.head.sha || github.sha }}'
             ci_checkout_commit = $env:GITHUB_SHA
-            platform = 'Windows-x64'
-            architecture = 'AMD64'
-            binary_format = 'PE32+'
-            vst3_bundle_path = 'Skell Spacer.vst3'
-            vst3_binary_path = 'Skell Spacer.vst3/Contents/x86_64-win/Skell Spacer.vst3'
-            moduleinfo_path = 'Skell Spacer.vst3/Contents/Resources/moduleinfo.json'
-            vst3_binary_sha256 = (Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
-            moduleinfo_sha256 = (Get-FileHash $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
+            workflow_run_id = $env:GITHUB_RUN_ID
+            binary = [ordered]@{
+              path = 'Skell Spacer.vst3/Contents/x86_64-win/Skell Spacer.vst3'
+              size_bytes = (Get-Item -LiteralPath $binary).Length
+              sha256 = $binaryHash
+              architecture = 'AMD64'
+              pe_format = 'PE32+'
+            }
+            moduleinfo = [ordered]@{
+              path = 'Skell Spacer.vst3/Contents/Resources/moduleinfo.json'
+              sha256 = $moduleHash
+              strict_json = $true
+              unique_class_ids = $classIds
+              normalization_applied = $false
+            }
+            validation = [ordered]@{
+              bundle_structure = 'passed'
+              metadata_identity = 'passed'
+              pe32_plus_amd64 = 'passed'
+              pluginval = [ordered]@{ strictness_level = 5; result = 'passed' }
+              installer_update_rollback = 'pending'
+            }
             portable_dsp_tests_verified_in_same_run = $true
             realtime_allocation_test_verified_in_same_run = $true
             cpu_matrix_generated_in_same_run = $true
@@ -221,25 +252,70 @@ jobs:
             licensing_review_verified = $false
             installer_verified = $false
             updater_rollback_verified = $false
+            installer_test_assertions = 0
             storefront_verified = $false
             commercial_release_eligible = $false
+            commercial_metadata_gate = [ordered]@{
+              status = 'blocked'
+              blockers = $commercialBlockers
+              owner_approved_license_asserted = $false
+            }
             status = 'PREVIEW_ONLY'
             release_blockers = $releaseBlockers
           }
-          $manifest | ConvertTo-Json -Depth 8 | Set-Content -Encoding utf8 (Join-Path $PWD 'dist/build-info.json')
+          $manifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 (Join-Path $PWD 'dist/build-info.json')
 
-          $hashLines = @(
-            "$((Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant())  Skell Spacer.vst3/Contents/x86_64-win/Skell Spacer.vst3"
-            "$((Get-FileHash $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant())  Skell Spacer.vst3/Contents/Resources/moduleinfo.json"
-            "$((Get-FileHash (Join-Path $PWD 'dist/build-info.json') -Algorithm SHA256).Hash.ToLowerInvariant())  build-info.json"
-          )
-          $hashLines | Set-Content -Encoding ascii (Join-Path $PWD 'dist/SHA256SUMS.txt')
-          $nestedArchives = @(Get-ChildItem -Path 'dist' -File -Filter '*.zip' -Recurse)
-          if ($nestedArchives.Count -ne 0) { throw 'Nested ZIP must not be included in final artifact' }
+          $distRoot = (Resolve-Path 'dist').Path
+          $hashLines = foreach ($file in (Get-ChildItem -LiteralPath $distRoot -File -Recurse | Sort-Object FullName)) {
+            $relative = [IO.Path]::GetRelativePath($distRoot, $file.FullName).Replace('\', '/')
+            "$((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+          }
+          [IO.File]::WriteAllLines((Join-Path $distRoot 'SHA256SUMS.txt'), $hashLines, [Text.UTF8Encoding]::new($false))
+
+      - name: Test private-preview installer, update and rollback
+        shell: pwsh
+        run: |
+          $selfTestOutput = & 'dist/Install-SkellSpacerPreview.ps1' -SelfTest 2>&1 | Out-String
+          Write-Host $selfTestOutput
+          $match = [regex]::Match($selfTestOutput, 'PASS:\s+(\d+)\s+Skell Spacer installer/update/rollback assertions')
+          if (-not $match.Success) { throw 'Installer self-test did not report a passing assertion count' }
+          $assertions = [int]$match.Groups[1].Value
+          if ($assertions -lt 20) { throw "Installer regression suite too small: $assertions assertions" }
+          $assertions | Set-Content -Encoding ascii (Join-Path $env:RUNNER_TEMP 'skellspacer-installer-assertions.txt')
+
+          $whatIfDestination = Join-Path $env:RUNNER_TEMP 'SkellSpacer-WhatIf-VST3'
+          $whatIfBackup = Join-Path $env:RUNNER_TEMP 'SkellSpacer-WhatIf-Backups'
+          & 'dist/Install-SkellSpacerPreview.ps1' -PackageRoot 'dist' -Destination $whatIfDestination -BackupRoot $whatIfBackup -WhatIf
+          if (Test-Path -LiteralPath $whatIfDestination) { throw '-WhatIf unexpectedly created a VST3 destination' }
+          if (Test-Path -LiteralPath $whatIfBackup) { throw '-WhatIf unexpectedly created a backup directory' }
+
+      - name: Finalize preview provenance and package checksums
+        shell: pwsh
+        run: |
+          $manifestPath = Join-Path $PWD 'dist/build-info.json'
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+          $assertionPath = Join-Path $env:RUNNER_TEMP 'skellspacer-installer-assertions.txt'
+          if (-not (Test-Path -LiteralPath $assertionPath -PathType Leaf)) { throw 'Installer assertion evidence is missing' }
+          $assertions = [int](Get-Content -Raw $assertionPath)
+          if ($assertions -lt 20) { throw 'Installer assertion count fell below the required release gate' }
+          $manifest.installer_verified = $true
+          $manifest.updater_rollback_verified = $true
+          $manifest.installer_test_assertions = $assertions
+          $manifest.validation.installer_update_rollback = 'passed'
+          $manifest.release_blockers = @($manifest.release_blockers | Where-Object { $_ -ne 'Installer/update/rollback tests have not yet run' })
+          $manifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 $manifestPath
+
+          $distRoot = (Resolve-Path 'dist').Path
+          $hashLines = foreach ($file in (Get-ChildItem -LiteralPath $distRoot -File -Recurse |
+              Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object FullName)) {
+            $relative = [IO.Path]::GetRelativePath($distRoot, $file.FullName).Replace('\', '/')
+            "$((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+          }
+          [IO.File]::WriteAllLines((Join-Path $distRoot 'SHA256SUMS.txt'), $hashLines, [Text.UTF8Encoding]::new($false))
 
       - uses: actions/upload-artifact@v4
         with:
-          retention-days: 7
+          retention-days: 14
           name: skell-spacer-vst-Windows-VST3
           path: dist/
           if-no-files-found: error
