@@ -182,7 +182,7 @@ jobs:
           $supportEmail = [string]$factory.'E-Mail'
           $vendorUrlConfigured = $vendorUrl -match '^https://\S+$'
           $supportEmailConfigured = $supportEmail -match '^[^@\s]+@[^@\s]+\.[^@\s]+$'
-          $uiAuditEnabled = '\${{ github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116') }}' -eq 'true'
+          $uiAuditEnabled = '${{ github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116') }}' -eq 'true'
           $uiScreens = @(Get-ChildItem -Path 'ui-audit' -File -Filter '*.png' -ErrorAction SilentlyContinue)
           if ($uiAuditEnabled -and $uiScreens.Count -lt 15) { throw "Expected 15+ actual JUCE UI screenshots; got $($uiScreens.Count)" }
 
@@ -210,7 +210,7 @@ jobs:
             format = 'VST3'
             platform = 'windows-x64'
             release_status = 'preview-only'
-            source_commit = '\${{ github.event.pull_request.head.sha || github.sha }}'
+            source_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
             ci_checkout_commit = $env:GITHUB_SHA
             workflow_run_id = $env:GITHUB_RUN_ID
             binary = [ordered]@{
