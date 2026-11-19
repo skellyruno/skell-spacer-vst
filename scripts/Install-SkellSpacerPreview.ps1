@@ -749,7 +749,8 @@ function Invoke-SelfTest {
         Assert-TestFails -Action { Invoke-InstallInternal -PackageRoot $package -Destination $invalidDestination -BackupRoot (Join-Path $root 'InvalidBackups') } -Label 'non-directory existing target rejected'
         Assert-Test -Condition ([IO.File]::ReadAllText($invalidTarget) -eq 'preserve') -Label 'invalid existing target remains untouched'
 
-        Write-Host "PASS: $script:SelfTestAssertions Skell Spacer installer/update/rollback assertions"
+        # Emit the machine-readable summary on the success stream so CI can capture it with 2>&1.
+        Write-Output "PASS: $script:SelfTestAssertions Skell Spacer installer/update/rollback assertions"
     } finally {
         if (Test-Path -LiteralPath $root) { Remove-Item -LiteralPath $root -Recurse -Force }
     }
