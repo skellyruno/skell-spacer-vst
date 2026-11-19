@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 _VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$")
+_CID_RE = re.compile(r"^[0-9A-Fa-f]{32}$")
+_EXPECTED_CLASS_COUNT = 2
 _REQUIRED_CATEGORIES = {"Audio Module Class", "Component Controller Class"}
 
 
@@ -87,6 +89,10 @@ def validate_moduleinfo(
     classes = document.get("Classes")
     if not isinstance(classes, list) or not classes:
         raise ValueError("moduleinfo Classes must be a non-empty array")
+    if len(classes) != _EXPECTED_CLASS_COUNT:
+        raise ValueError(
+            f"moduleinfo must contain exactly {_EXPECTED_CLASS_COUNT} VST3 classes, got {len(classes)}"
+        )
 
     class_ids: set[str] = set()
     categories: set[str] = set()
@@ -95,8 +101,10 @@ def validate_moduleinfo(
             raise ValueError(f"moduleinfo Classes[{index}] must be an object")
         cid = entry.get("CID")
         category = entry.get("Category")
-        if not isinstance(cid, str) or not cid.strip():
-            raise ValueError(f"moduleinfo Classes[{index}] has no CID")
+        if not isinstance(cid, str) or not _CID_RE.fullmatch(cid):
+            raise ValueError(
+                f"moduleinfo Classes[{index}] CID must be exactly 32 hexadecimal characters"
+            )
         if cid in class_ids:
             raise ValueError(f"duplicate VST3 class CID: {cid}")
         class_ids.add(cid)
