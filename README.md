@@ -80,7 +80,7 @@ reader and realtime processing regressions cover 44.1/48/96/192 kHz.
 
 ## Install and first test in a DAW
 
-The Windows artifact is an **unsigned private preview**, not a commercial release. Close FL Studio and other hosts before installing.
+The Windows artifact is an **unsigned unreleased preview**, not a commercial release. Close FL Studio and other hosts before installing.
 
 1. Extract the complete ZIP to a writable folder. Do not copy only the `.vst3` bundle; the installer validates the package manifest, provenance, notices and checksums.
 2. Preview the operation without changing files:
@@ -122,7 +122,7 @@ Skell house look: warm black, bone-white kerned type, one accent colour, flat sq
 
 ## Status
 
-V17 RC exact-head commit `2c2f30d1857af5de5d4877bb89139e01a0f40e29` passed the Windows x64 Release VST3 build, strict package identity checks and pluginval strictness 5 in Actions run [#44467967152](https://github.com/skellyruno/skell-spacer-vst/actions/runs/44467967152). The paired portable DSP suite also passed. The baseline package is a private preview; it is not FL Studio acceptance or commercial release approval.
+V17 RC exact-head commit `2c2f30d1857af5de5d4877bb89139e01a0f40e29` passed the Windows x64 Release VST3 build, strict package identity checks and pluginval strictness 5 in Actions run [#44467967152](https://github.com/skellyruno/skell-spacer-vst/actions/runs/44467967152). The paired portable DSP suite also passed. The baseline package is a unreleased preview; it is not FL Studio acceptance or commercial release approval.
 
 A separate draft release branch adds a per-user Windows installer with verified backup, update and rollback. Its exact-head installer tests must pass before the installer flags are set in the package manifest. FL Studio sidechain routing, host state reopen, target-hardware CPU/latency, real vocal/beat A/B, local Quick4 capture, licensing, vendor URL, support email and storefront remain separate gates.
 

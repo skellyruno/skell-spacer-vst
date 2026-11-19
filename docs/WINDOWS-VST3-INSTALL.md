@@ -1,6 +1,6 @@
 # Skell Spacer — Windows VST3 private-preview install
 
-**Status: unsigned private preview only.** This package is not a commercial release and is not cleared for redistribution.
+**Status: unsigned unreleased preview only.** This package is not a commercial release and is not cleared for redistribution. The repository is public, so Actions artifacts are accessible to users with repository read access; this workflow does not create a private download channel or publish a GitHub Release.
 
 ## Requirements
 
@@ -65,3 +65,8 @@ The self-test uses temporary folders and synthetic test binaries only; it does n
 
 After installing, rescan VST3 plugins and test the actual sidechain routing in FL Studio. Verify host state, automation, save/reopen, Listen/bypass and real vocal/beat A/B. Windows build and pluginval do not imply FL Studio acceptance. V17 also does not claim sound compatibility with the old, unshipped V7 FFT Studio prototype.
 
+
+
+## Path safety
+
+The installer fails closed if the package, install destination, backup root, or any existing parent component is a Windows reparse point (including a junction or symbolic link). If `LOCALAPPDATA` is redirected through a junction, pass a real local `-Destination` and `-BackupRoot` path outside that redirected tree. This prevents a parent junction from silently redirecting install or rollback writes.

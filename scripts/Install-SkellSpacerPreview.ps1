@@ -68,20 +68,49 @@ function Assert-NoReparsePoints {
     }
 }
 
+
+function Assert-NoReparsePathAncestors {
+    param([Parameter(Mandatory)][string]$Path)
+    $full = Get-FullPath $Path
+    $volumeRoot = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($volumeRoot)) { throw "Path is not rooted: $Path" }
+    $current = $volumeRoot
+    if (Test-Path -LiteralPath $current) {
+        $rootItem = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($rootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing a reparse-point volume root: $current"
+        }
+    }
+    $relative = $full.Substring($volumeRoot.Length)
+    foreach ($segment in ($relative -split '[\\/]' | Where-Object { $_.Length -gt 0 })) {
+        $current = Join-Path $current $segment
+        if (-not (Test-Path -LiteralPath $current)) { break }
+        $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Refusing a path with a reparse-point ancestor: $current"
+        }
+    }
+}
+
 function Ensure-SafeDirectory {
     param([Parameter(Mandatory)][string]$Path)
     Assert-NonRootPath -Path $Path
+    Assert-NoReparsePathAncestors -Path $Path
     if (Test-Path -LiteralPath $Path) {
         if (-not (Test-Path -LiteralPath $Path -PathType Container)) { throw "Expected a directory: $Path" }
     } else {
         $null = New-Item -ItemType Directory -Path $Path -Force
     }
+    Assert-NoReparsePathAncestors -Path $Path
     Assert-NoReparsePoints -Path $Path
 }
 
 function Assert-SafeInstallPaths {
     param([string]$PackageRoot, [string]$Destination, [string]$BackupRoot)
-    foreach ($path in @($PackageRoot, $Destination, $BackupRoot)) { Assert-NonRootPath -Path $path }
+    foreach ($path in @($PackageRoot, $Destination, $BackupRoot)) {
+        Assert-NonRootPath -Path $path
+        Assert-NoReparsePathAncestors -Path $path
+    }
     if (Test-PathsOverlap -Left $PackageRoot -Right $Destination) { throw 'Package and install destination must not overlap' }
     if (Test-PathsOverlap -Left $PackageRoot -Right $BackupRoot) { throw 'Package and backup root must not overlap' }
     if (Test-PathsOverlap -Left $Destination -Right $BackupRoot) { throw 'Install destination and backup root must not overlap' }
@@ -221,11 +250,12 @@ function Test-PreviewPackage {
     param([Parameter(Mandatory)][string]$PackageRoot)
     $root = Get-FullPath $PackageRoot
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw "Package root is missing: $root" }
+    Assert-NoReparsePathAncestors -Path $root
     Assert-NoReparsePoints -Path $root
     foreach ($required in @('build-info.json', 'SHA256SUMS.txt', 'Install-SkellSpacerPreview.ps1',
         'WINDOWS-VST3-INSTALL.md', 'THIRD_PARTY_NOTICES.md')) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required) -PathType Leaf)) {
-            throw "Required private-preview package file is missing: $required"
+            throw "Required unreleased-preview package file is missing: $required"
         }
     }
     $bundles = @(Get-ChildItem -LiteralPath $root -Directory -Recurse -Filter '*.vst3')
@@ -296,6 +326,7 @@ function Write-StateFile {
 function Get-RollbackPlan {
     param([string]$BackupRoot, [string]$Destination)
     if (-not (Test-Path -LiteralPath $BackupRoot -PathType Container)) { throw 'Install backup root is missing' }
+    Assert-NoReparsePathAncestors -Path $BackupRoot
     Assert-NoReparsePoints -Path $BackupRoot
     $backupFull = Get-FullPath $BackupRoot
     $statePath = Join-Path $backupFull 'active-install.json'
@@ -310,6 +341,7 @@ function Get-RollbackPlan {
         throw 'Recorded VST3 destination and backup root must not overlap'
     }
     if (-not (Test-Path -LiteralPath $recordedDestination -PathType Container)) { throw 'Recorded VST3 destination is missing' }
+    Assert-NoReparsePathAncestors -Path $recordedDestination
     Assert-NoReparsePoints -Path $recordedDestination
     if (-not [string]::IsNullOrWhiteSpace($Destination) -and
         -not [string]::Equals((Get-FullPath $Destination), $recordedDestination, [StringComparison]::OrdinalIgnoreCase)) {
@@ -643,6 +675,15 @@ function Invoke-SelfTest {
         Write-TestPackage -Root $traversal -Version '0.9.1'
         [IO.File]::WriteAllText((Join-Path $traversal 'SHA256SUMS.txt'), ('0' * 64) + '  ../outside' + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
         Assert-TestFails -Action { Test-PreviewPackage -PackageRoot $traversal } -Label 'checksum path traversal rejected'
+
+        $junctionTarget = Join-Path $root 'junction-target'
+        $junctionLink = Join-Path $root 'junction-link'
+        $null = New-Item -ItemType Directory -Path $junctionTarget -Force
+        $null = New-Item -ItemType Junction -Path $junctionLink -Target $junctionTarget -ErrorAction Stop
+        Assert-TestFails -Action {
+            Assert-SafeInstallPaths -PackageRoot $package -Destination (Join-Path $junctionLink 'VST3') -BackupRoot (Join-Path $root 'junction-backups')
+        } -Label 'reparse-point parent path rejected'
+        Remove-Item -LiteralPath $junctionLink -Force
 
         $identityRoot = Join-Path $root 'identity'
         $identityBundle = Write-TestBundle -Root $identityRoot -Version '0.9.1' -DuplicateIds
