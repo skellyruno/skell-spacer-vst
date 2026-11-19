@@ -94,6 +94,23 @@ class ModuleInfoNormalizerTests(unittest.TestCase):
         with self.assertRaises(json.JSONDecodeError):
             normalize_text('{"Name": "Skell Spacer",,,}', "Skell Spacer", "Skell Audio")
 
+    def test_rejects_unexpected_third_class(self) -> None:
+        document = json.loads(strip_trailing_commas(FIXTURE_WITH_TRAILING_COMMAS))
+        extra = dict(document["Classes"][1])
+        extra["CID"] = "0123456789ABCDEF0123456789ABCDEF"
+        extra["Category"] = "Unexpected Class"
+        document["Classes"].append(extra)
+        with self.assertRaisesRegex(ValueError, "exactly 2 VST3 classes"):
+            normalize_text(json.dumps(document), "Skell Spacer", "Skell Audio")
+
+    def test_rejects_non_32_character_or_non_hex_cids(self) -> None:
+        for invalid_cid in ("A" * 31, "G" * 32):
+            with self.subTest(invalid_cid=invalid_cid):
+                document = json.loads(strip_trailing_commas(FIXTURE_WITH_TRAILING_COMMAS))
+                document["Classes"][0]["CID"] = invalid_cid
+                with self.assertRaisesRegex(ValueError, "32 hexadecimal characters"):
+                    normalize_text(json.dumps(document), "Skell Spacer", "Skell Audio")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
