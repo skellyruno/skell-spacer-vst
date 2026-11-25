@@ -451,7 +451,7 @@ private:
     float w[2] = { params.pan > 0.f ? 1.f - params.pan : 1.f, params.pan < 0.f ? 1.f + params.pan : 1.f };
     if (nCh == 1) w[0] = 1.f;
     anyActive = false;
-    for (auto& count : activeCount) count = 0;
+    for (int c = 0; c < nCh; ++c) activeCount[c] = 0;
     for (int c = nCh; c < kMaxCh; ++c) std::fill(applied[c], applied[c] + kBands, 0.f);
     // solve for the per-band cuts whose overlapped sum gives the requested depth: a few damped gradient steps on the
     // least-squares error at band centres and mid-points, never boosting

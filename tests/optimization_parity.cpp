@@ -1,7 +1,5 @@
 #include "ZeroLatencyEngine.h"
-#define skell baseline_skell
 #include "BaselineZeroLatencyEngine.h"
-#undef skell
 #include <cstdio>
 #include <cstring>
 #include <chrono>
@@ -46,7 +44,7 @@ int main() {
         std::memcpy(x,l,sizeof l); std::memcpy(y,r,sizeof r);
         std::memcpy(u,l,sizeof l); std::memcpy(v,r,sizeof r);
         float* out[2]={x,y};float* ref[2]={u,v}; const float* key[2]={sl,sr};
-        int nc=k<500?2:1, ns=k<530?2:0;
+        int nc=k>=500&&k<520?1:2, ns=k<530?2:0;
         auto t0=Clock::now();b[j]->process(ref,key,nc,ns,N);auto t1=Clock::now();
         a[j]->process(out,key,nc,ns,N);auto t2=Clock::now();
         oldUs+=std::chrono::duration<double,std::micro>(t1-t0).count();

@@ -458,7 +458,8 @@ void SkellAudioProcessorEditor::showSidechainFilter(bool show) {
 }
 
 void SkellAudioProcessorEditor::timerCallback() {
-  if (!isShowing()) return;
+  // Offscreen native editor audit uses an unattached editor, so do not
+  // require a desktop peer before refreshing the spectrum.
   spectrum.tick();
   const int lit = juce::jlimit(0, 48, juce::roundToInt(spectrum.maxCutDb() / skell::ZeroLatencyEngine::kMaxCutDb * 48.0f));
   if (lit != previousMeterSegments) {
