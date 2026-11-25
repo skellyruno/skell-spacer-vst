@@ -30,6 +30,7 @@ private:
   float sMain[N] = {}, sSc[N] = {}, sCut[N] = {};
   float peakCut = 0.0f;
   bool primed = false;
+  double lastTickMs = 0.0, lastAnalysisMs = 0.0;
 };
 
 // A two-thumb log-frequency range slider bound to a low and a high parameter (used for the band and the sidechain filter).
@@ -74,6 +75,9 @@ private:
   juce::AudioProcessorValueTreeState::ButtonAttachment freezeA, powerA, listenA, msA;
   BandControl band, scBand;       // affected range (Low / High Cut) and sidechain filter (high-pass / low-pass), shown one at a time
   void showSidechainFilter(bool show);   // the bottom card is either the Low/High Cut band or the sidechain filter
+  int previousMeterSegments = -1;
+  double previousDisplayRate = 0.0;
+  bool previousMsMode = false;
   bool scActive = false;   // a sidechain is connected and carrying audio (status line)
   bool scView = false;     // the bottom card currently shows the sidechain filter
   juce::Label entry;       // inline value editor (right-click a knob)

@@ -14,6 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Baseline parity and four-instance DSP benchmark
+        run: |
+          mkdir -p baseline quality-artifacts
+          git show 986845bb6fe04c7f52e2d08182fb44f75902690d:Source/ZeroLatencyEngine.h > baseline/BaselineZeroLatencyEngine.h
+          git show 986845bb6fe04c7f52e2d08182fb44f75902690d:Source/SpacerDSP.h > baseline/SpacerDSP.h
+          g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -I Source -I baseline tests/optimization_parity.cpp -o optimization_parity
+          set -o pipefail
+          ./optimization_parity | tee quality-artifacts/optimization-parity.txt
       - name: Verify compatibility parameter IDs
         run: python3 tests/parameter_contract_test.py
       - name: Strict VST3 moduleinfo normalizer regression

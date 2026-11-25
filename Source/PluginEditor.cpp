@@ -149,14 +149,26 @@ void SkellLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& butto
 
 // ---------------------------------------------------------------- spectrum
 void SpectrumView::tick() {
-  proc.readSpectrum(mainDb, scDb, cutDb);
+  const double now = juce::Time::getMillisecondCounterHiRes();
+  const double dt = lastTickMs > 0.0 ? juce::jlimit(0.0, 250.0, now - lastTickMs) : 1000.0 / 60.0;
+  lastTickMs = now;
+  // FFT at ~30 Hz, interpolation at 60 Hz. Wall-clock smoothing remains
+  // consistent when the message thread is delayed.
+  if (!primed || now - lastAnalysisMs >= 30.0) {
+    proc.readSpectrum(mainDb, scDb, cutDb);
+    lastAnalysisMs = now;
+  }
+  const auto coefficient = [dt](float old) {
+    return (float)(1.0 - std::pow(1.0 - old, dt * 0.03));
+  };
+  const float rise = coefficient(0.6f), fall = coefficient(0.15f), cutFollow = coefficient(0.35f);
   float pk = 0.0f;
   for (int i = 0; i < N; ++i) {
     if (!primed) { sMain[i] = mainDb[i]; sSc[i] = scDb[i]; sCut[i] = cutDb[i]; }
     else {
-      auto follow = [](float& s, float v) { s += (v - s) * (v > s ? 0.6f : 0.15f); };
+      auto follow = [rise, fall](float& s, float v) { s += (v - s) * (v > s ? rise : fall); };
       follow(sMain[i], mainDb[i]); follow(sSc[i], scDb[i]);
-      sCut[i] += (cutDb[i] - sCut[i]) * 0.35f;
+      sCut[i] += (cutDb[i] - sCut[i]) * cutFollow;
     }
     pk = juce::jmax(pk, sCut[i]);
   }
@@ -401,7 +413,7 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   band.sendInitialUpdate();
   scBand.sendInitialUpdate();
   resized();
-  startTimerHz(30);
+  startTimerHz(60);
 }
 
 SkellAudioProcessorEditor::~SkellAudioProcessorEditor() {
@@ -446,12 +458,24 @@ void SkellAudioProcessorEditor::showSidechainFilter(bool show) {
 }
 
 void SkellAudioProcessorEditor::timerCallback() {
+  if (!isShowing()) return;
   spectrum.tick();
+  const int lit = juce::jlimit(0, 48, juce::roundToInt(spectrum.maxCutDb() / skell::ZeroLatencyEngine::kMaxCutDb * 48.0f));
+  if (lit != previousMeterSegments) {
+    previousMeterSegments = lit;
+    repaintDesign({ 0.0f, 48.0f, (float) designWidth, 14.0f });
+  }
   const bool a = proc.isSidechainActive();
-  if (a != scActive) scActive = a;
-  repaintDesign({ 0.0f, 48.0f, (float) designWidth, 14.0f });     // header meter
-  repaintDesign({ 200.0f, 68.0f, 330.0f, 18.0f });               // status line
-  repaintDesign({ 14.0f, 336.0f, 522.0f, 16.0f });               // knob labels (pan mode)
+  const double rate = proc.getCurrentSampleRate();
+  if (a != scActive || rate != previousDisplayRate) {
+    scActive = a; previousDisplayRate = rate;
+    repaintDesign({ 150.0f, 68.0f, 380.0f, 18.0f });
+  }
+  const bool msOn = proc.parameters.getRawParameterValue("ms")->load() > 0.5f;
+  if (msOn != previousMsMode) {
+    previousMsMode = msOn;
+    repaintDesign({ 14.0f, 336.0f, 522.0f, 16.0f });
+  }
 }
 
 void SkellAudioProcessorEditor::paint(juce::Graphics& g) {

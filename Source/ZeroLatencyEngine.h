@@ -42,6 +42,8 @@ public:
     phaseBlendCoef = (float)(1.0 - std::exp(-1.0 / (0.050 * fs)));
     step = fs <= 50000.0 ? 16 : (fs <= 100000.0 ? 32 : 64);
     stepSec = (float)(step / fs);
+    updateTimeConstants();
+    updateSpread();
 
     nb = 0;
     for (int i = 0; i < kBands; ++i) {
@@ -105,6 +107,7 @@ public:
     std::memset(solved, 0, sizeof solved);
     for (auto& c : bell) for (auto& b : c) b = Bell();
     peak = 0.f;
+    for (auto& count : activeCount) count = 0;
     stepCount = 0; mix = 0.f; anyActive = false; guardPk = 0.f; guardGain = 1.f;
     phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
     for (int i = 0; i < kDispN; ++i) {
@@ -140,7 +143,11 @@ public:
     }
     if (p.lowHz != params.lowHz || p.highHz != params.highHz) bandDirty = true;
     const bool scChanged = p.scLowHz != params.scLowHz || p.scHighHz != params.scHighHz;
+    const bool timeChanged = p.attackMs != params.attackMs || p.releaseMs != params.releaseMs;
+    const bool spreadChanged = p.smooth != params.smooth;
     params = p;
+    if (timeChanged) updateTimeConstants();
+    if (spreadChanged) updateSpread();
     if (scChanged) updateScFilter();
   }
 
@@ -259,14 +266,12 @@ public:
       for (int j = 0; j < kBands; ++j)
         cut[c][j] = dispApplied[c][j].load(std::memory_order_relaxed);
     for (int i = 0; i < kDisp; ++i) {
-      const float f = 20.f * std::pow(1000.f, (float)i / (float)(kDisp - 1));
-      const float wf = (float)std::tan(kPi * (double)std::min(f, 0.499f * (float)rate) / rate);
       float deepest = 0.f;
       for (int c = 0; c < kMaxCh; ++c) {
         float sum = 0.f;
-        for (int j = 0; j < work.nb; ++j)
-          if (cut[c][j] > 0.f && std::fabs(std::log2(f / work.fc[j])) < 1.5f)
-            sum += bellDb(wf / work.g[j], -cut[c][j], work.q[j]);
+        for (int j = work.firstBand[i]; j < work.endBand[i]; ++j)
+          if (cut[c][j] > 0.f)
+            sum += bellDb(work.warpedRatio[i][j], -cut[c][j], work.q[j]);
         deepest = std::max(deepest, -sum);
       }
       cutOut[i] = deepest;
@@ -377,9 +382,8 @@ private:
   }
 
   float runChain(int c, float x) {
-    for (int i = 0; i < nb; ++i) {
-      Bell& b = bell[c][i];
-      if (!b.on) continue;
+    for (int j = 0; j < activeCount[c]; ++j) {
+      Bell& b = bell[c][activeIndex[c][j]];
       // x + m1*v1 with v1 = a2*x + (a1*ic1 - a2*ic2) folded into one multiply-add on x, so the serial path
       // through the cascade is a single fused op per bell; the state update runs off that path
       const float v3 = x - b.ic2;
@@ -393,15 +397,23 @@ private:
     return x;
   }
 
+  void updateTimeConstants() {
+    attackCoef = std::exp(-stepSec / std::max(0.001f, params.attackMs * 0.001f));
+    releaseCoef = std::exp(-stepSec / std::max(0.005f, params.releaseMs * 0.001f));
+    peakDecayCoef = std::exp(-stepSec / 2.0f);
+  }
+  void updateSpread() {
+    const float h = params.smooth * 0.5f * (float)kBandsPerOct;
+    for (int j = -kSpan; j <= kSpan; ++j)
+      spreadWeight[j + kSpan] = clamp01(h - (float)std::abs(j) + 1.f);
+  }
+
   // every `step` samples: levels -> depth -> envelope -> pan -> bell coefficients
   void updateControl(int nCh) {
     if (bandDirty) buildBand();
     for (auto& c : scHp) for (auto& f : c) f.flush();
     for (auto& c : scLp) for (auto& f : c) f.flush();
-    const float aCoef = std::exp(-stepSec / std::max(0.001f, params.attackMs * 0.001f));
-    const float rCoef = std::exp(-stepSec / std::max(0.005f, params.releaseMs * 0.001f));
-    const float peakDecay = std::exp(-stepSec / 2.0f);
-    const float h = params.smooth * 0.5f * (float)kBandsPerOct;   // spread (in bands) of the detected power (up to 1/2 octave)
+    const float aCoef = attackCoef, rCoef = releaseCoef, peakDecay = peakDecayCoef;
     {
       float ps[kBands], curPeak = 0.f;
       for (int i = 0; i < nb; ++i) {
@@ -409,7 +421,7 @@ private:
         for (int j = -kSpan; j <= kSpan; ++j) {
           const int q = i + j;
           if (q < 0 || q >= nb) continue;
-          const float w = clamp01(h - (float)std::abs(j) + 1.f);
+          const float w = spreadWeight[j + kSpan];
           sum += w * anaPow[q]; wsum += w;
         }
         ps[i] = 2.f * sum / wsum;                 // unity-peak band-pass: sine power A^2/2 -> A^2
@@ -439,6 +451,7 @@ private:
     float w[2] = { params.pan > 0.f ? 1.f - params.pan : 1.f, params.pan < 0.f ? 1.f + params.pan : 1.f };
     if (nCh == 1) w[0] = 1.f;
     anyActive = false;
+    for (auto& count : activeCount) count = 0;
     for (int c = nCh; c < kMaxCh; ++c) std::fill(applied[c], applied[c] + kBands, 0.f);
     // solve for the per-band cuts whose overlapped sum gives the requested depth: a few damped gradient steps on the
     // least-squares error at band centres and mid-points, never boosting
@@ -478,6 +491,7 @@ private:
         b.m1 = k * (A * A - 1.f);
         b.gx = 1.f + b.m1 * b.a2;
         b.on = true; anyActive = true;
+        activeIndex[c][activeCount[c]++] = i;
       }
     }
   }
@@ -504,6 +518,8 @@ private:
     std::vector<float> win, re, im;
     float fc[kBands] = {}, g[kBands] = {}, q[kBands] = {};
     int lo[kDisp] = {}, hi[kDisp] = {}, nb = 0;
+    int firstBand[kDisp] = {}, endBand[kDisp] = {};
+    float warpedRatio[kDisp][kBands] = {};
     void prepare(double rate) {
       fft.init(kDispN);
       win.resize(kDispN); re.assign(kDispN, 0.f); im.assign(kDispN, 0.f);
@@ -527,6 +543,16 @@ private:
         int top = (int)std::ceil(freq(t + .5 * dt) / binHz);
         lo[i] = std::min(std::max(bottom, 1), kDispN / 2);
         hi[i] = std::min(std::max(top, lo[i]), kDispN / 2);
+        // Same display response geometry, calculated only on sample-rate change.
+        const float f = 20.f * std::pow(1000.f, (float)i / (float)(kDisp - 1));
+        const float wf = (float)std::tan(kPi * (double)std::min(f, 0.499f * (float)rate) / rate);
+        firstBand[i] = nb; endBand[i] = nb;
+        for (int j = 0; j < nb; ++j) {
+          if (std::fabs(std::log2(f / fc[j])) >= 1.5f) continue;
+          firstBand[i] = std::min(firstBand[i], j);
+          endBand[i] = j + 1;
+          warpedRatio[i][j] = wf / g[j];
+        }
       }
       fs = rate;
     }
@@ -546,6 +572,9 @@ private:
   float anaS[4][kBands] = {}, anaPow[kBands] = {};
   float env[kBands] = {}, applied[kMaxCh][kBands] = {};   // applied: the cut (dB) each bell really makes
   Bell bell[kMaxCh][kBands];
+  int activeIndex[kMaxCh][kBands] = {}, activeCount[kMaxCh] = {};
+  float attackCoef = 0.f, releaseCoef = 0.f, peakDecayCoef = 0.f;
+  float spreadWeight[2 * kSpan + 1] = {};
   Svf scHp[kMaxCh][2], scLp[kMaxCh][2];
   bool scHpOn = false, scLpOn = false;
 
