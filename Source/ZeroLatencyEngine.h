@@ -9,6 +9,7 @@
 #include <cstdint>
 #include "SpacerDSP.h"
 #include "LevelSensitivity.h"
+#include "DetectorResponse.h"
 
 namespace skell {
 
@@ -66,6 +67,7 @@ public:
       bellG[i] = g;
       const float tau = std::max(0.004f, 2.5f / fc[i]);
       anaPowCoef[i] = 1.0f - std::exp(-1.0f / ((float)fs * tau));
+      fastPowCoef[i] = DetectorResponse::fastCoefficient(fs, fc[i]);
       density[i] = 1000.0f / fc[i];                 // 1 / bandwidth: every band is 1/8 octave wide in Hz
     }
     // Neighbouring bells overlap and their cuts add in dB. The cuts are solved for (updateControl) so that the summed
@@ -105,6 +107,8 @@ public:
   void reset() {
     clearAnalysis();
     sensitivity.reset();
+    detectorBlend = 0.f;
+    std::copy(anaPowCoef, anaPowCoef + nb, activePowCoef);
     std::memset(env, 0, sizeof env);
     std::memset(applied, 0, sizeof applied);
     std::memset(solved, 0, sizeof solved);
@@ -162,7 +166,7 @@ public:
     if (!main || nCh < 1 || nSamples <= 0) return;
     nCh = std::min(nCh, kMaxCh);
     for (int c = 0; c < nCh; ++c) if (!main[c]) return;
-    if (!sc || nSc > kMaxCh) nSc = sc ? kMaxCh : 0;
+    nSc = sc ? std::clamp(nSc, 0, kMaxCh) : 0;
     for (int c = 0; c < nSc; ++c) if (!sc[c]) { nSc = 0; break; }
 
     const bool wantMs = params.ms && nCh == 2;
@@ -182,8 +186,8 @@ public:
       const float x0 = clean(main[0][i]), x1 = nCh > 1 ? clean(main[1][i]) : 0.f;
       float d = 0.f;      // the sidechain, filtered, then summed to mono
       if (nSc > 0) {
-        float s0 = scFilter(0, clean(sc[0][i])), s1 = 0.f;
-        if (nSc >= 2) s1 = scFilter(1, clean(sc[1][i]));
+        float s0 = scFilter(0, DetectorResponse::safeKey(sc[0][i])), s1 = 0.f;
+        if (nSc >= 2) s1 = scFilter(1, DetectorResponse::safeKey(sc[1][i]));
         d = s0;
         if (nSc >= 2) {
           // The usual mono key is the mid channel. When stereo key channels
@@ -381,7 +385,7 @@ private:
       v2 = s3[i] + a2 * s2[i] + a3 * v3;
       s2[i] = 2.f * v1 - s2[i]; s3[i] = 2.f * v2 - s3[i];
       const float z = v1 * anaK[i];
-      pw[i] += (z * z - pw[i]) * anaPowCoef[i] + 1.0e-30f;
+      pw[i] += (z * z - pw[i]) * activePowCoef[i] + 1.0e-30f;
     }
   }
 
@@ -434,6 +438,15 @@ private:
       peak = std::max(curPeak, peak * peakDecay);
       const float peakDb = 3.01029996f * fastLog2(std::max(peak, 1e-20f));
       const float blend = sensitivity.advance(params.levelSensitivity);
+      // Faster power analysis is opt-in via Level Sensitivity and the existing
+      // short attack range. Coefficients change only at the control cadence;
+      // the per-sample bank keeps the same arithmetic and layout.
+      const float nextBlend = DetectorResponse::fastBlend(blend, params.attackMs);
+      if (nextBlend != detectorBlend) {
+        detectorBlend = nextBlend;
+        for (int i = 0; i < nb; ++i)
+          activePowCoef[i] = DetectorResponse::coefficient(anaPowCoef[i], fastPowCoef[i], detectorBlend);
+      }
 
       for (int i = 0; i < nb; ++i) {
         // Compare bands by power per Hz (the bands are constant-Q, so wide ones collect more of a broadband
@@ -578,6 +591,7 @@ private:
   float fc[kBands] = {}, bandWeight[kBands] = {}, bellG[kBands] = {};
   float kernC[kBands][2 * kReach + 1] = {}, kernM[kBands][2 * kReach + 1] = {}, solved[kBands] = {}, lsStep = 0.f;
   float density[kBands] = {}, bellQ[kBands] = {}, anaK[kBands] = {}, anaA1[kBands] = {}, anaA2[kBands] = {}, anaA3[kBands] = {}, anaPowCoef[kBands] = {};
+  float fastPowCoef[kBands] = {}, activePowCoef[kBands] = {}, detectorBlend = 0.f;
   float anaS[4][kBands] = {}, anaPow[kBands] = {};
   float env[kBands] = {}, applied[kMaxCh][kBands] = {};   // applied: the cut (dB) each bell really makes
   Bell bell[kMaxCh][kBands];

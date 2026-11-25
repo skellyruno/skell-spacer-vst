@@ -29,6 +29,12 @@ int main(int argc,char** argv) {
   const std::string dir=argc>1?argv[1]:".";
   skell::ZeroLatencyEngine e;e.prepare(rate);
   skell::SpacerParams p;p.amount=.72f;p.smooth=.22f;p.attackMs=6.f;p.releaseMs=145.f;
+  // Keep existing synthetic reference unchanged; opt-in alternate captures use identical dry/key.
+  const std::string mode=argc>2?argv[2]:"legacy";
+  if (mode=="sensitive") p.levelSensitivity=1.f;
+  else if (mode=="fast") {p.levelSensitivity=1.f;p.attackMs=1.f;}
+  else if (mode=="fast-legacy") p.attackMs=1.f;
+  else if(mode!="legacy") return 2;
   e.setParams(p);
   std::vector<float> dry(nframes*2),wet(nframes*2),key(nframes*2);
   double diff=0,raw=0,rendered=0;float peak=0;bool finite=true;
@@ -71,9 +77,9 @@ int main(int argc,char** argv) {
     }
   }
   const bool valid=finite&&peak<1.f&&diff/raw>0.0001&&rendered/raw<1.1&&e.latencySamples()==0;
-  const bool saved=wav(dir+"/SkellSpacer_DRY_15s_24bit.wav",dry)
-                   &&wav(dir+"/SkellSpacer_DUCKED_15s_24bit.wav",wet)
-                   &&wav(dir+"/SkellSpacer_KEY_15s_24bit.wav",key);
+  const std::string outputName=mode=="legacy"?"SkellSpacer_DUCKED_15s_24bit.wav":"SkellSpacer_"+mode+"_15s_24bit.wav";
+  const bool saved=wav(dir+"/"+outputName,wet) && (mode!="legacy" ||
+                   (wav(dir+"/SkellSpacer_DRY_15s_24bit.wav",dry)&&wav(dir+"/SkellSpacer_KEY_15s_24bit.wav",key)));
   std::printf("[%s] 15s stereo synthetic A/B: dry RMS %.5f, wet RMS %.5f, rms difference %.5f, wet peak %.5f, latency %d samples, save=%s\n",
               valid&&saved?"PASS":"FAIL",std::sqrt(raw/(2.*nframes)),std::sqrt(rendered/(2.*nframes)),
               std::sqrt(diff/(2.*nframes)),peak,e.latencySamples(),saved?"yes":"no");
