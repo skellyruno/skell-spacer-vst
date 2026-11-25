@@ -40,6 +40,7 @@ int main() {
       }
       if(b%7==0) {
         p.amount=(float)(b%100)/100.f;
+        p.levelSensitivity=(float)(b%21)/20.f;
         p.pan=(float)(b%19)/9.f-1.f;
         p.scLowHz=20.f+(float)(b%12)*30.f;
         e.setParams(p);

@@ -24,6 +24,18 @@ jobs:
           g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -I Source -I baseline tests/optimization_parity.cpp -o optimization_parity
           set -o pipefail
           ./optimization_parity | tee quality-artifacts/optimization-parity.txt
+      - name: Level sensitivity law, exact V17 parity and detector sweeps
+        run: |
+          mkdir -p prior quality-artifacts
+          git show a732ece7f9cdc5c9753d0a2dec36c23e6043c855:Source/ZeroLatencyEngine.h | sed -e 's/"SpacerDSP.h"/"PriorSpacerDSP.h"/' -e 's/namespace skell/namespace prior_skell/g' > prior/PriorZeroLatencyEngine.h
+          git show a732ece7f9cdc5c9753d0a2dec36c23e6043c855:Source/SpacerDSP.h | sed 's/namespace skell/namespace prior_skell/g' > prior/PriorSpacerDSP.h
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/test_level_law.cpp -o level_law
+          ./level_law
+          g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -Werror -I Source -I prior tests/level_sensitivity_test.cpp -o level_sensitivity_test
+          set -o pipefail
+          ./level_sensitivity_test | tee quality-artifacts/level-sensitivity.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I prior tests/level_sensitivity_test.cpp -o level_sensitivity_san
+          ./level_sensitivity_san
       - name: Verify compatibility parameter IDs
         run: python3 tests/parameter_contract_test.py
       - name: Strict VST3 moduleinfo normalizer regression
@@ -74,6 +86,15 @@ jobs:
         run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build --config Release --parallel 2
+
+      - name: Verify native state migration and roundtrip
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIStress.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Compiled state test executable missing' }
+          & $exe.FullName --state-only
+          if ($LASTEXITCODE -ne 0) { throw "State migration test failed ($LASTEXITCODE)" }
 
       - name: Stage and verify Windows VST3 bundle
         shell: pwsh

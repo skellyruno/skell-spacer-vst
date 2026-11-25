@@ -8,6 +8,7 @@
 // Spectrum FFT and response visualizations are UI-thread-only; audio publishes atomic snapshots.
 #include <cstdint>
 #include "SpacerDSP.h"
+#include "LevelSensitivity.h"
 
 namespace skell {
 
@@ -42,6 +43,7 @@ public:
     phaseBlendCoef = (float)(1.0 - std::exp(-1.0 / (0.050 * fs)));
     step = fs <= 50000.0 ? 16 : (fs <= 100000.0 ? 32 : 64);
     stepSec = (float)(step / fs);
+    sensitivity.prepare(stepSec);
     updateTimeConstants();
     updateSpread();
 
@@ -102,6 +104,7 @@ public:
 
   void reset() {
     clearAnalysis();
+    sensitivity.reset();
     std::memset(env, 0, sizeof env);
     std::memset(applied, 0, sizeof applied);
     std::memset(solved, 0, sizeof solved);
@@ -126,6 +129,7 @@ public:
     auto fin = [](float v, float lo, float hi, float def) { return std::isfinite(v) ? std::min(hi, std::max(lo, v)) : def; };
     p.amount = fin(p.amount, 0.f, 1.f, 0.f);
     p.smooth = fin(p.smooth, 0.f, 1.f, 0.f);
+    p.levelSensitivity = fin(p.levelSensitivity, 0.f, 1.f, 0.f);
     p.pan = fin(p.pan, -1.f, 1.f, 0.f);
     p.attackMs = fin(p.attackMs, 1.f, 200.f, 10.f);
     p.releaseMs = fin(p.releaseMs, 5.f, 2000.f, 150.f);
@@ -429,6 +433,7 @@ private:
       }
       peak = std::max(curPeak, peak * peakDecay);
       const float peakDb = 3.01029996f * fastLog2(std::max(peak, 1e-20f));
+      const float blend = sensitivity.advance(params.levelSensitivity);
 
       for (int i = 0; i < nb; ++i) {
         // Compare bands by power per Hz (the bands are constant-Q, so wide ones collect more of a broadband
@@ -437,7 +442,10 @@ private:
         const float db = 3.01029996f * fastLog2(std::max(ps[i], 1e-20f));
         const float rel = clamp01((dbDens - peakDb + kNoneDb) / (kNoneDb - kFullDb));
         const float gate = clamp01((db + 85.f) / 10.f);
-        const float t = rel * gate;
+        const float legacy = rel * gate;
+        // Keep the disabled path exactly the previous expression. Apply the new
+        // independent knee before the existing attack/release and overlap solver.
+        const float t = blend > 0.f ? legacy * LevelSensitivity::scale(ps[i], blend) : legacy;
         if (!params.freeze) {
           float& e = env[i];
           const float cf = t > e ? aCoef : rCoef;
@@ -560,6 +568,7 @@ private:
 
   double fs = 48000.0;
   SpacerParams params;
+  LevelSensitivity sensitivity;
   int nb = kBands, step = 16, stepCount = 0;
   float stepSec = 0.f, mix = 0.f, mixStep = 0.002f, peak = 0.f;
   float guardPk = 0.f, guardGain = 1.f, guardDecay = 0.99f, guardRelease = 0.01f;

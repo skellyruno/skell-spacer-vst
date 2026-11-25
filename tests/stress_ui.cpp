@@ -20,9 +20,32 @@ static int failures = 0;
 static void check(bool ok, const juce::String& what) { std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what.toRawUTF8()); if (!ok) ++failures; }
 static void pump(int ms = 30) { juce::MessageManager::getInstance()->runDispatchLoopUntil(ms); }
 
-int main() {
+int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI init;
   SkellAudioProcessor proc; proc.enableAllBuses(); proc.setRateAndBufferSizeDetails(48000.0, 256); proc.prepareToPlay(48000.0, 256);
+
+  // Exercise exact APVTS save/restore, including old states in the same instance.
+  {
+    auto* sensitivity = proc.parameters.getParameter("levelSensitivity");
+    auto* amount = proc.parameters.getParameter("amount");
+    if (!sensitivity || !amount) return 1;
+    check(sensitivity->getValue() == 0.f, "default uses legacy detector");
+    amount->setValueNotifyingHost(0.37f);
+    sensitivity->setValueNotifyingHost(0.78f);
+    juce::MemoryBlock current; proc.getStateInformation(current);
+    auto tree = proc.parameters.copyState();
+    tree.removeChild(tree.getChildWithProperty("id", "levelSensitivity"), nullptr);
+    auto xml = tree.createXml();
+    if (!xml) return 1;
+    juce::MemoryBlock legacy; juce::AudioProcessor::copyXmlToBinary(*xml, legacy);
+    proc.setStateInformation(legacy.getData(), (int) legacy.getSize());
+    check(sensitivity->getValue() == 0.f, "old project resets sensitivity to legacy");
+    check(std::abs(amount->getValue() - 0.37f) < 0.002f, "legacy Amount preserved");
+    proc.setStateInformation(current.getData(), (int) current.getSize());
+    check(std::abs(sensitivity->getValue() - 0.78f) < 0.002f, "new state restores sensitivity");
+    sensitivity->setValueNotifyingHost(0.f);
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--state-only") return failures ? 1 : 0;
 
   // ---- audio thread runs flat out while the message thread hammers parameters, buttons and editors
   std::atomic<bool> stop{ false }; std::atomic<long> blocks{ 0 }; std::atomic<bool> bad{ false };

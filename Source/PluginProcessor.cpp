@@ -37,6 +37,7 @@ SkellAudioProcessor::SkellAudioProcessor()
   pListen = parameters.getRawParameterValue("listen");
   pScLow = parameters.getRawParameterValue("schp");
   pScHigh = parameters.getRawParameterValue("sclp");
+  pLevelSensitivity = parameters.getRawParameterValue("levelSensitivity");
   setLatencySamples(0);
 }
 
@@ -90,6 +91,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
         return t.containsIgnoreCase("l") ? -v : v; })));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"ms", 1}, "Mid/Side", false));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"listen", 1}, "Listen", false));
+  // Additive, versioned host parameter; existing IDs and editor layout unchanged.
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"levelSensitivity", 2}, "Level Sensitivity",
+    juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 0.0f,
+    AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
   return layout;
 }
 
@@ -123,6 +128,7 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   skell::SpacerParams p;
   p.amount = pAmount->load() * 0.01f;
   p.smooth = pSmooth->load() * 0.01f;
+  p.levelSensitivity = pLevelSensitivity->load() * 0.01f;
   p.attackMs = pAttack->load();
   p.releaseMs = pRelease->load();
   p.lowHz = pLow->load();
@@ -197,7 +203,16 @@ void SkellAudioProcessor::setStateInformation(const void* data, int size) {
   if (auto xml = getXmlFromBinary(data, size))
     if (xml->hasTagName(parameters.state.getType())) {
       themeIndex.store(juce::jlimit(0, 3, xml->getIntAttribute("theme", 0)));
-      parameters.replaceState(juce::ValueTree::fromXml(*xml));
+      auto state = juce::ValueTree::fromXml(*xml);
+      // An old project must restore legacy sound even after a sensitive preset
+      // was loaded in this same instance. APVTS's absent value is not enough.
+      if (!state.getChildWithProperty("id", "levelSensitivity").isValid()) {
+        juce::ValueTree legacyDefault("PARAM");
+        legacyDefault.setProperty("id", "levelSensitivity", nullptr);
+        legacyDefault.setProperty("value", 0.0f, nullptr);
+        state.appendChild(legacyDefault, nullptr);
+      }
+      parameters.replaceState(state);
     }
 }
 

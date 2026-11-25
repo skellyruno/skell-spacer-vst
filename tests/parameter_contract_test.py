@@ -19,4 +19,8 @@ assert 'BUNDLE_ID "audio.skell.spacer"' in cmake, "Bundle ID changed"
 assert re.search(r'p\.pan\s*=\s*pPan->load\(\)\s*\*\s*0\.01f\s*;', processor), (
     "Pan host-to-DSP conversion must divide by 100"
 )
-print(f"[PASS] V16 contract: {len(required)} parameters, no dead controls, VST3 identity")
+assert ids == required, f"unexpected changes to version-1 IDs: {ids ^ required}"
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*2\}', processor) == ["levelSensitivity"]
+assert re.search(r'p\.levelSensitivity\s*=\s*pLevelSensitivity->load\(\)\s*\*\s*0\.01f\s*;', processor)
+assert 'getChildWithProperty("id", "levelSensitivity")' in processor
+print(f"[PASS] V16 contract: {len(required)} legacy parameters + 1 additive version-2 parameter, VST3 identity")

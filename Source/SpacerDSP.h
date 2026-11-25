@@ -23,6 +23,7 @@ struct SpacerParams {
   bool ms = false;           // false = L/R, true = M/S
   bool freeze = false;
   bool power = true;
+  float levelSensitivity = 0.f; // 0..1: legacy relative spectrum -> absolute-level-sensitive depth
 };
 
 class FFT {
