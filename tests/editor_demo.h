@@ -7,7 +7,7 @@
 #include <memory>
 
 namespace spacer_demo {
-constexpr int rate=48000, fps=24, frames=144, perFrame=rate/fps, block=500;
+constexpr int rate=48000, fps=24, frames=384, perFrame=rate/fps, block=500;
 constexpr int sampleCount=frames*perFrame;
 struct Wav {
   juce::FileOutputStream stream;
@@ -49,7 +49,14 @@ static bool run(const juce::File& out, const juce::String& revision) {
   });
   auto* parameter=proc.parameters.getParameter("amount");
   auto* raw=proc.parameters.getRawParameterValue("amount");
-  if (!amount || !parameter || !raw) return false;
+  auto* power=find<juce::TextButton>(*editor,[](juce::TextButton& b){return b.getButtonText()=="Power";});
+  auto* listen=find<juce::TextButton>(*editor,[](juce::TextButton& b){return b.getButtonText()=="Listen";});
+  auto* powerRaw=proc.parameters.getRawParameterValue("power");
+  auto* listenRaw=proc.parameters.getRawParameterValue("listen");
+  if (!amount || !parameter || !raw || !power || !listen || !powerRaw || !listenRaw) return false;
+  if (powerRaw->load()<.5f || listenRaw->load()>.5f) return false;
+  juce::StringArray events;
+  events.add("frame,sample,control,value");
   Wav dry(out.getChildFile("dry.wav")), wet(out.getChildFile("processed.wav")), key(out.getChildFile("sidechain.wav"));
   if (!dry.header() || !wet.header() || !key.header()) return false;
   juce::StringArray csv;
@@ -59,7 +66,19 @@ static bool run(const juce::File& out, const juce::String& revision) {
   const auto tau=juce::MathConstants<double>::twoPi;
   for (int frame=0;frame<frames;++frame) {
     // Ramp through the actual GUI control, not a reconstructed dial.
-    const auto requested=100.*juce::jlimit(0.,1.,(frame/fps*1.0 + (frame%fps)/double(fps)-1.)/4.);
+    const auto requested=90.*juce::jlimit(0.,1.,(frame/double(fps)-1.)/4.);
+    // Explicit real button events. Wait for JUCE's async click and verify
+    // the attached host parameter before any samples for this frame.
+    if (frame==8*fps || frame==10*fps || frame==12*fps || frame==14*fps) {
+      const bool isPower=frame<12*fps;
+      auto* button=isPower?power:listen;
+      auto* value=isPower?powerRaw:listenRaw;
+      const float expected=(frame==10*fps || frame==12*fps)?1.f:0.f;
+      button->triggerClick();pump(60);
+      if (std::abs(value->load()-expected)>.01f) return false;
+      events.add(juce::String(frame)+","+juce::String(frame*perFrame)+","+
+                 (isPower?"power":"listen")+","+juce::String(value->load(),1));
+    }
     amount->setValue(requested,juce::sendNotificationSync);
     const float actual=raw->load(), normalized=parameter->getValue();
     if (std::abs(actual-amount->getValue())>.11 || std::abs(actual-normalized*100.f)>.11) return false;
@@ -91,11 +110,12 @@ static bool run(const juce::File& out, const juce::String& revision) {
   }
   dry.stream.flush();wet.stream.flush();key.stream.flush();
   if (dry.stream.getStatus().failed() || wet.stream.getStatus().failed() || key.stream.getStatus().failed()
-      || !proc.isSidechainActive() || !out.getChildFile("editor.csv").replaceWithText(csv.joinIntoString("\n")+"\n")) return false;
+      || !proc.isSidechainActive() || !out.getChildFile("editor.csv").replaceWithText(csv.joinIntoString("\n")+"\n")
+      || !out.getChildFile("controls.csv").replaceWithText(events.joinIntoString("\n")+"\n")) return false;
   const auto meta=juce::String("{\"schema\":\"skell.demo.editor.v1\",\"origin\":\"offline_juce_editor\","
     "\"product\":\"Skell Spacer\",\"parameter\":\"amount\",\"revision\":\"")+revision+
-    "\",\"fps\":24,\"frame_count\":144,\"sample_rate\":48000,\"samples\":288000,"
-    "\"width\":1100,\"height\":900,\"source_kind\":\"synthetic_test_signal\",\"latency_samples\":0}";
+    "\",\"fps\":24,\"frame_count\":384,\"sample_rate\":48000,\"samples\":768000,"
+    "\"width\":1100,\"height\":900,\"source_kind\":\"synthetic_test_signal\",\"latency_samples\":0,\"control_trace\":true}";
   return out.getChildFile("capture.json").replaceWithText(meta);
 }
 } // namespace spacer_demo

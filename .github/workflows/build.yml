@@ -186,6 +186,33 @@ jobs:
           path: ui-audit/*.png
           if-no-files-found: warn
 
+      # Explicit requested Creator video benchmark, not an everyday screenshot
+      # workflow. Reuse the already compiled opt-in audit executable.
+      - name: Produce synchronized real Spacer video source
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Existing compiled editor audit executable missing' }
+          $revision = (git rev-parse HEAD).Trim()
+          & $exe.FullName --demo (Join-Path $PWD 'spacer-editor-demo') $revision
+          if ($LASTEXITCODE -ne 0) { throw "Real Spacer video source failed: $LASTEXITCODE" }
+          if (@(Get-ChildItem spacer-editor-demo -Filter 'frame_*.png').Count -ne 384) { throw 'Incomplete frame sequence' }
+          foreach ($name in @('capture.json','editor.csv','controls.csv','dry.wav','processed.wav','sidechain.wav')) {
+            if (-not (Test-Path "spacer-editor-demo/$name")) { throw "Missing $name" }
+          }
+          $meta = Get-Content spacer-editor-demo/capture.json | ConvertFrom-Json
+          if ($meta.revision -ne $revision -or $meta.samples -ne 768000 -or $meta.latency_samples -ne 0) { throw 'Capture provenance or clock mismatch' }
+          if ((Get-Content spacer-editor-demo/controls.csv).Count -ne 5) { throw 'Missing real control transitions' }
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        with:
+          name: SkellSpacer-Actual-Editor-Video-Source
+          path: spacer-editor-demo/
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Validate staged VST3 with pluginval
         shell: pwsh
         run: |
