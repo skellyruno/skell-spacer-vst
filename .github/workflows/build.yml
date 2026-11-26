@@ -196,14 +196,14 @@ jobs:
           $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
           if (-not $exe) { throw 'Existing compiled editor audit executable missing' }
           $revision = (git rev-parse HEAD).Trim()
-          & $exe.FullName --demo (Join-Path $PWD 'spacer-editor-demo') $revision
+          & $exe.FullName --demo60 (Join-Path $PWD 'spacer-editor-demo') $revision
           if ($LASTEXITCODE -ne 0) { throw "Real Spacer video source failed: $LASTEXITCODE" }
-          if (@(Get-ChildItem spacer-editor-demo -Filter 'frame_*.png').Count -ne 384) { throw 'Incomplete frame sequence' }
+          if (@(Get-ChildItem spacer-editor-demo -Filter 'frame_*.png').Count -ne 960) { throw 'Incomplete 60 FPS frame sequence' }
           foreach ($name in @('capture.json','editor.csv','controls.csv','dry.wav','processed.wav','sidechain.wav')) {
             if (-not (Test-Path "spacer-editor-demo/$name")) { throw "Missing $name" }
           }
           $meta = Get-Content spacer-editor-demo/capture.json | ConvertFrom-Json
-          if ($meta.revision -ne $revision -or $meta.samples -ne 768000 -or $meta.latency_samples -ne 0) { throw 'Capture provenance or clock mismatch' }
+          if ($meta.revision -ne $revision -or $meta.samples -ne 768000 -or $meta.fps -ne 60 -or $meta.frame_count -ne 960 -or $meta.latency_samples -ne 0) { throw 'Capture provenance or clock mismatch' }
           if ((Get-Content spacer-editor-demo/controls.csv).Count -ne 5) { throw 'Missing real control transitions' }
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'

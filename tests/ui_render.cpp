@@ -60,8 +60,8 @@ static void savePng(const juce::Image& img, const juce::File& f) {
 
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI init;
-  if (argc==4 && juce::String(argv[1])=="--demo") {
-    const bool ok=spacer_demo::run(juce::File(argv[2]),juce::String(argv[3]));
+  if (argc==4 && (juce::String(argv[1])=="--demo" || juce::String(argv[1])=="--demo60")) {
+    const bool ok=spacer_demo::run(juce::File(argv[2]),juce::String(argv[3]),juce::String(argv[1])=="--demo60"?60:24);
     std::printf("[%s] offline Spacer editor demonstration\n",ok?"PASS":"FAIL");
     return ok?0:1;
   }

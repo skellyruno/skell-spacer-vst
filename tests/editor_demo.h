@@ -7,8 +7,7 @@
 #include <memory>
 
 namespace spacer_demo {
-constexpr int rate=48000, fps=24, frames=384, perFrame=rate/fps, block=500;
-constexpr int sampleCount=frames*perFrame;
+constexpr int rate=48000, seconds=16, sampleCount=rate*seconds;
 struct Wav {
   juce::FileOutputStream stream;
   explicit Wav(const juce::File& path):stream(path) {}
@@ -29,9 +28,11 @@ struct Wav {
 struct Meter {
   double squares=0., peak=0.;
   void add(double x) { squares+=x*x;peak=juce::jmax(peak,std::abs(x)); }
-  double rms() const { return std::sqrt(squares/perFrame); }
+  double rms(int samples) const { return std::sqrt(squares/samples); }
 };
-static bool run(const juce::File& out, const juce::String& revision) {
+static bool run(const juce::File& out, const juce::String& revision, int fps=24) {
+  if (fps!=24 && fps!=60) return false;
+  const int frames=seconds*fps, perFrame=rate/fps, block=fps==60?200:500;
   if (revision.length()!=40 || !revision.containsOnly("0123456789abcdef")
       || out.exists() || !out.createDirectory()) return false;
   SkellAudioProcessor proc;
@@ -98,15 +99,15 @@ static bool run(const juce::File& out, const juce::String& revision) {
       for (int i=0;i<block;++i) { double v=0.; if (!wet.sample(buffer.getSample(0,i),v)) return false;b.add(v); }
     }
     // Let the actual editor timer draw the measured spectrum and meter.
-    pump(42);
+    pump(fps==60?18:42);
     auto image=editor->createComponentSnapshot(editor->getLocalBounds(),true,2.f);
     if (image.isNull() || image.getWidth()!=1100 || image.getHeight()!=900) return false;
     juce::FileOutputStream png(out.getChildFile("frame_"+juce::String(frame).paddedLeft('0',6)+".png"));
     if (!png.openedOk() || !juce::PNGImageFormat().writeImageToStream(image,png)) return false;
     png.flush();if (png.getStatus().failed()) return false;
     csv.add(juce::String(frame)+","+juce::String(frame*perFrame)+",amount,"+
-      juce::String(normalized,9)+","+juce::String(actual,9)+","+juce::String(a.rms(),9)+","+
-      juce::String(b.rms(),9)+","+juce::String(a.peak,9)+","+juce::String(b.peak,9));
+      juce::String(normalized,9)+","+juce::String(actual,9)+","+juce::String(a.rms(perFrame),9)+","+
+      juce::String(b.rms(perFrame),9)+","+juce::String(a.peak,9)+","+juce::String(b.peak,9));
   }
   dry.stream.flush();wet.stream.flush();key.stream.flush();
   if (dry.stream.getStatus().failed() || wet.stream.getStatus().failed() || key.stream.getStatus().failed()
@@ -114,7 +115,7 @@ static bool run(const juce::File& out, const juce::String& revision) {
       || !out.getChildFile("controls.csv").replaceWithText(events.joinIntoString("\n")+"\n")) return false;
   const auto meta=juce::String("{\"schema\":\"skell.demo.editor.v1\",\"origin\":\"offline_juce_editor\","
     "\"product\":\"Skell Spacer\",\"parameter\":\"amount\",\"revision\":\"")+revision+
-    "\",\"fps\":24,\"frame_count\":384,\"sample_rate\":48000,\"samples\":768000,"
+    "\",\"fps\":"+juce::String(fps)+",\"frame_count\":"+juce::String(frames)+",\"sample_rate\":48000,\"samples\":768000,"
     "\"width\":1100,\"height\":900,\"source_kind\":\"synthetic_test_signal\",\"latency_samples\":0,\"control_trace\":true}";
   return out.getChildFile("capture.json").replaceWithText(meta);
 }
