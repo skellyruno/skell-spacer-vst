@@ -20,6 +20,8 @@ int main() {
     wet.setParams(p); classic.setParams(p);
     p.deltaListen = true; delta.setParams(p); p.deltaListen = false;
     p.smart = 1.f; p.punchProtect = .6f; p.bassProtect = .6f; p.adaptiveRelease = .8f;
+    p.spectralFocus=.6f; p.vocalFocus=.5f; p.perceptualFocus=.4f;
+    p.harmonicProtect=.6f; p.depthBudget=.5f;
     smart.setParams(p);
     float err = 0.f;
     double dryE = 0., wetE = 0., smartE = 0.;
@@ -54,7 +56,11 @@ int main() {
       overlap = std::max(overlap, snap.overlap[i]);
     }
     require(overlap > .1f, "overlap detected");
+    require(std::isfinite(snap.modeledConflictBefore) && std::isfinite(snap.modeledConflictAfter), "finite modeled masking");
+    require(snap.modeledConflictBefore > 0.f && snap.modeledConflictAfter >= 0.f && snap.modeledConflictAfter <= snap.modeledConflictBefore + 1e-5f, "modeled residual bounded");
+    require(smartE > wetE, "less total energy removed in two-tone fixture");
     require(smart.latencySamples() == 0 && delta.latencySamples() == 0, "no added latency");
+    std::printf("modeled conflict %.6f -> %.6f\n", static_cast<double>(snap.modeledConflictBefore), static_cast<double>(snap.modeledConflictAfter));
     std::printf("%.0f Hz delta error %.9g, wet/dry %.6f, smart/dry %.6f, max overlap %.6f\n",fs,static_cast<double>(err),wetE/dryE,smartE/dryE,static_cast<double>(overlap));
   }
   std::puts("PASS: Smart Space diagnostics and Delta listening");

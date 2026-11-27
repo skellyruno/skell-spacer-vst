@@ -10,6 +10,7 @@
 #include "SpacerDSP.h"
 #include "LevelSensitivity.h"
 #include "DetectorResponse.h"
+#include "SpectralIntelligence.h"
 
 namespace skell {
 
@@ -38,6 +39,8 @@ public:
   struct SmartSnapshot {
     float overlap[kBands] = {}, protection[kBands] = {};
     float inputPower = 0.f, outputPower = 0.f, onsetInput = 0.f, onsetOutput = 0.f;
+    // Relative modeled overlap, not a listener score or vocal-isolation metric.
+    float modeledConflictBefore = 0.f, modeledConflictAfter = 0.f;
   };
   SmartSnapshot getSmartSnapshot() const {
     SmartSnapshot r;
@@ -49,6 +52,8 @@ public:
     r.outputPower = diagOutput.load(std::memory_order_relaxed);
     r.onsetInput = diagOnsetIn.load(std::memory_order_relaxed);
     r.onsetOutput = diagOnsetOut.load(std::memory_order_relaxed);
+    r.modeledConflictBefore = diagConflictBefore.load(std::memory_order_relaxed);
+    r.modeledConflictAfter = diagConflictAfter.load(std::memory_order_relaxed);
     return r;
   }
 
@@ -133,6 +138,8 @@ public:
     sensitivity.reset();
     clearSmart();
     smartBlend = deltaMix = 0.f;
+    std::fill(focusBlend, focusBlend + 5, 0.f);
+    diagConflictBefore.store(0.f); diagConflictAfter.store(0.f);
     diagInput.store(0.f); diagOutput.store(0.f);
     diagOnsetIn.store(0.f); diagOnsetOut.store(0.f);
     for (int i = 0; i < kBands; ++i) {
@@ -169,6 +176,11 @@ public:
     p.punchProtect = fin(p.punchProtect, 0.f, 1.f, 0.f);
     p.bassProtect = fin(p.bassProtect, 0.f, 1.f, 0.f);
     p.adaptiveRelease = fin(p.adaptiveRelease, 0.f, 1.f, 0.f);
+    p.spectralFocus = fin(p.spectralFocus, 0.f, 1.f, 0.f);
+    p.vocalFocus = fin(p.vocalFocus, 0.f, 1.f, 0.f);
+    p.perceptualFocus = fin(p.perceptualFocus, 0.f, 1.f, 0.f);
+    p.harmonicProtect = fin(p.harmonicProtect, 0.f, 1.f, 0.f);
+    p.depthBudget = fin(p.depthBudget, 0.f, 1.f, 0.f);
     p.pan = fin(p.pan, -1.f, 1.f, 0.f);
     p.attackMs = fin(p.attackMs, 1.f, 200.f, 10.f);
     p.releaseMs = fin(p.releaseMs, 5.f, 2000.f, 150.f);
@@ -200,6 +212,13 @@ public:
   void process(float* const* main, const float* const* sc, int nCh, int nSc, int nSamples, float* const* scOut = nullptr) {
     if (!main || nCh < 1 || nSamples <= 0) return;
     nCh = std::min(nCh, kMaxCh);
+    if (lastMainChannels != nCh) {
+      // Avoid stale right-channel detector state across negotiated layout changes.
+      std::memset(mainAnaS[1], 0, sizeof mainAnaS[1]);
+      std::memset(mainAnaPow[1], 0, sizeof mainAnaPow[1]);
+      prevIn[1] = prevOut[1] = 0.f;
+      lastMainChannels = nCh;
+    }
     for (int c = 0; c < nCh; ++c) if (!main[c]) return;
     nSc = sc ? std::clamp(nSc, 0, kMaxCh) : 0;
     for (int c = 0; c < nSc; ++c) if (!sc[c]) { nSc = 0; break; }
@@ -547,6 +566,24 @@ private:
       }
     }
     const float onset = smartBlend > 0.f ? onsetStrength() : 0.f;
+    const float focusTarget[5] = {params.spectralFocus, params.vocalFocus, params.perceptualFocus, params.harmonicProtect, params.depthBudget};
+    bool advanced = false;
+    for (int j = 0; j < 5; ++j) {
+      float& f = focusBlend[j];
+      f = focusTarget[j] > f ? std::min(focusTarget[j], f + smartStep)
+                             : std::max(focusTarget[j], f - smartStep);
+      advanced |= f > 0.f;
+    }
+    advanced = advanced && smartBlend > 0.f;
+    float highFraction = 0.f;
+    if (advanced && focusBlend[1] > 0.f) {
+      float highEnergy = 0.f, midEnergy = 0.f;
+      for (int i = 0; i < nb; ++i) {
+        if (fc[i] >= 4500.f) highEnergy += anaPow[i];
+        else if (fc[i] >= 250.f) midEnergy += anaPow[i];
+      }
+      highFraction = highEnergy / std::max(highEnergy + midEnergy, 1e-18f);
+    }
     {
       float ps[kBands], curPeak = 0.f;
       for (int i = 0; i < nb; ++i) {
@@ -596,7 +633,21 @@ private:
           const float punch = params.punchProtect * onset * 0.80f;
           const float bass = params.bassProtect * low * (1.f - 0.75f * conflict);
           const float keep = (1.f - punch) * (1.f - bass);
-          const float factor = occupancy * keep;
+          float extra = 1.f;
+          if (advanced) {
+            using SI = SpectralIntelligence;
+            const auto mainPower = [&](int b) {
+              return mainAnaPow[0][b] + (nCh > 1 ? mainAnaPow[1][b] : mainAnaPow[0][b]);
+            };
+            const float neighborPower = .5f*(mainPower(std::max(0,i-2)) + mainPower(std::min(nb-1,i+2)));
+            const float rawKey = 2.f*anaPow[i];
+            if (focusBlend[0] > 0.f) extra *= SI::blend(focusBlend[0], SI::narrow(rawKey, ps[i]));
+            if (focusBlend[1] > 0.f) extra *= SI::blend(focusBlend[1], SI::vocal(fc[i], highFraction));
+            if (focusBlend[2] > 0.f) extra *= SI::blend(focusBlend[2], SI::perceptual(fc[i]));
+            if (focusBlend[3] > 0.f) extra *= SI::blend(focusBlend[3], SI::harmonic(m, neighborPower, conflict));
+            if (focusBlend[4] > 0.f) extra *= SI::blend(focusBlend[4], SI::budget(m, rawKey));
+          }
+          const float factor = occupancy * keep * extra;
           t *= 1.f + smartBlend * (factor - 1.f);
           // More rapid recovery when the key fades or an instrumental onset
           // needs protection; bass recovers less aggressively than upper bands.
@@ -605,7 +656,7 @@ private:
           rc += (rc*rc*rc - rc) * std::max(recovery, smartBlend * punch);
           ac += (1.f - ac) * timing * low * 0.35f;
           diagOverlap[i].store(conflict, std::memory_order_relaxed);
-          diagProtection[i].store(smartBlend * (1.f - keep), std::memory_order_relaxed);
+          diagProtection[i].store(smartBlend * (1.f - keep*extra), std::memory_order_relaxed);
         }
         if (!params.freeze) {
           float& e = env[i];
@@ -689,6 +740,31 @@ private:
       diagOutput.store(meterOut, std::memory_order_relaxed);
       diagOnsetIn.store(meterOnsetIn, std::memory_order_relaxed);
       diagOnsetOut.store(meterOnsetOut, std::memory_order_relaxed);
+      // Estimate the residual conflict at band centers from the existing
+      // response kernel and actual applied cuts. Equal weighting per log band.
+      // Do this only at the display cadence; no FFT or allocations in audio.
+      float conflictBefore = 0.f, conflictAfter = 0.f;
+      if (smartBlend > 0.f) {
+        for (int i = 0; i < nb; ++i) {
+          const float overlap = diagOverlap[i].load(std::memory_order_relaxed);
+          float cutL = 0.f, cutR = 0.f;
+          for (int k = -kReach; k <= kReach; ++k) {
+            const int j = i+k;
+            if (j < 0 || j >= nb) continue;
+            cutL += kernC[i][k+kReach]*applied[0][j];
+            cutR += kernC[i][k+kReach]*applied[1][j];
+          }
+          const float gainL = fastExp2(-std::max(0.f,cutL)*.33219281f);
+          const float gainR = fastExp2(-std::max(0.f,cutR)*.33219281f);
+          // In mono use the first channel; in stereo average the two
+          // power gains. Respect the actual power fade.
+          const float gain = lastMainChannels == 1 ? gainL : .5f*(gainL+gainR);
+          conflictBefore += overlap;
+          conflictAfter += overlap*(1.f-mix*(1.f-gain));
+        }
+      }
+      diagConflictBefore.store(conflictBefore, std::memory_order_relaxed);
+      diagConflictAfter.store(conflictAfter, std::memory_order_relaxed);
       for (int c = 0; c < kMaxCh; ++c)
         for (int j = 0; j < kBands; ++j)
           dispApplied[c][j].store(applied[c][j], std::memory_order_relaxed);
@@ -747,6 +823,9 @@ private:
   SpacerParams params;
   LevelSensitivity sensitivity;
   float smartBlend = 0.f, smartStep = 0.f, deltaMix = 0.f;
+  float focusBlend[5] = {};
+  int lastMainChannels = 0;
+  std::atomic<float> diagConflictBefore{0.f}, diagConflictAfter{0.f};
   float onsetFastCoef = 0.f, onsetSlowCoef = 0.f, meterCoef = 0.f;
   float onsetFast = 0.f, onsetSlow = 0.f;
   float mainAnaS[kMaxCh][4][kBands] = {}, mainAnaPow[kMaxCh][kBands] = {};

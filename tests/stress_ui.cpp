@@ -45,6 +45,33 @@ int main(int argc, char** argv) {
     check(std::abs(sensitivity->getValue() - 0.78f) < 0.002f, "new state restores sensitivity");
     sensitivity->setValueNotifyingHost(0.f);
   }
+  // Every added parameter must survive current state recall and reset to
+  // zero when restoring a pre-Smart project into an already modified instance.
+  {
+    const char* added[] = {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget"};
+    for (const auto* id : added) {
+      auto* p = proc.parameters.getParameter(id);
+      if (!p) return 1;
+      check(p->getValue() == 0.f, juce::String(id)+" defaults to Classic");
+      p->setValueNotifyingHost(1.f);
+    }
+    juce::MemoryBlock current; proc.getStateInformation(current);
+    auto legacyTree = proc.parameters.copyState();
+    for (const auto* id : added)
+      legacyTree.removeChild(legacyTree.getChildWithProperty("id", id), nullptr);
+    auto xml = legacyTree.createXml();
+    if (!xml) return 1;
+    juce::MemoryBlock legacy; juce::AudioProcessor::copyXmlToBinary(*xml, legacy);
+    proc.setStateInformation(legacy.getData(), (int) legacy.getSize());
+    for (const auto* id : added)
+      check(proc.parameters.getParameter(id)->getValue() == 0.f, juce::String(id)+" old state reset");
+    proc.setStateInformation(current.getData(), (int) current.getSize());
+    for (const auto* id : added) {
+      auto* p = proc.parameters.getParameter(id);
+      check(p->getValue() == 1.f, juce::String(id)+" current state recall");
+      p->setValueNotifyingHost(0.f);
+    }
+  }
   if (argc > 1 && juce::String(argv[1]) == "--state-only") return failures ? 1 : 0;
 
   // ---- audio thread runs flat out while the message thread hammers parameters, buttons and editors

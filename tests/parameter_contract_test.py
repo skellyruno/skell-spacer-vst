@@ -24,4 +24,5 @@ assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*2\}', processor) == ["levelS
 assert re.search(r'p\.levelSensitivity\s*=\s*pLevelSensitivity->load\(\)\s*\*\s*0\.01f\s*;', processor)
 assert 'getChildWithProperty("id", "levelSensitivity")' in processor
 assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*3\}', processor) == ["smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen"]
-print(f"[PASS] V16 contract: {len(required)} legacy parameters + 1 version-2 + 5 version-3 parameters, VST3 identity")
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*4\}', processor) == ["spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget"]
+print(f"[PASS] V16 contract: {len(required)} legacy parameters + 1 version-2 + 5 version-3 + 5 version-4 parameters, VST3 identity")

@@ -42,6 +42,7 @@ private:
   skell::ZeroLatencyEngine engine;      // zero latency: the plugin never reports a delay to the host
   std::atomic<float> *pAmount{}, *pSmooth{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{}, *pPan{}, *pMs{}, *pListen{}, *pScLow{}, *pScHigh{}, *pLevelSensitivity{};
   std::atomic<float> *pSmart{}, *pPunch{}, *pBass{}, *pAdaptive{}, *pDelta{};
+  std::atomic<float> *pSpectral{}, *pVocal{}, *pPerceptual{}, *pHarmonic{}, *pDepth{};
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};

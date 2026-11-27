@@ -41,6 +41,11 @@ int main() {
       if(b%7==0) {
         p.amount=(float)(b%100)/100.f;
         p.levelSensitivity=(float)(b%21)/20.f;
+        p.smart=(float)(b%17)/16.f;
+        p.punchProtect=.8f; p.bassProtect=.7f; p.adaptiveRelease=.6f;
+        p.spectralFocus=.8f; p.vocalFocus=.7f; p.perceptualFocus=.6f;
+        p.harmonicProtect=.9f; p.depthBudget=.5f;
+        p.deltaListen=b%3==0;
         p.attackMs=1.f+(float)(b%5);
         p.pan=(float)(b%19)/9.f-1.f;
         p.scLowHz=20.f+(float)(b%12)*30.f;

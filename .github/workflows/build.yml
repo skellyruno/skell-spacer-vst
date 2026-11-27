@@ -51,6 +51,8 @@ jobs:
           ./detector_response_san
       - name: Smart Space overlap diagnostics and delta reconstruction
         run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/spectral_intelligence_test.cpp -o spectral_intelligence_test
+          ./spectral_intelligence_test
           g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/smart_space_test.cpp -o smart_space_test
           set -o pipefail
           ./smart_space_test | tee quality-artifacts/smart-space.txt
