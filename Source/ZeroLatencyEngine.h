@@ -32,6 +32,26 @@ public:
 
   int latencySamples() const { return 0; }
 
+  // Diagnostic snapshots: measured power before/after processing (not monitor),
+  // derivative-energy retention during detected onsets, and model-based overlap
+  // and target protection. Not a perceptual quality score.
+  struct SmartSnapshot {
+    float overlap[kBands] = {}, protection[kBands] = {};
+    float inputPower = 0.f, outputPower = 0.f, onsetInput = 0.f, onsetOutput = 0.f;
+  };
+  SmartSnapshot getSmartSnapshot() const {
+    SmartSnapshot r;
+    for (int i = 0; i < kBands; ++i) {
+      r.overlap[i] = diagOverlap[i].load(std::memory_order_relaxed);
+      r.protection[i] = diagProtection[i].load(std::memory_order_relaxed);
+    }
+    r.inputPower = diagInput.load(std::memory_order_relaxed);
+    r.outputPower = diagOutput.load(std::memory_order_relaxed);
+    r.onsetInput = diagOnsetIn.load(std::memory_order_relaxed);
+    r.onsetOutput = diagOnsetOut.load(std::memory_order_relaxed);
+    return r;
+  }
+
   // Never call concurrently with process().
   void prepare(double sampleRate) {
     fs = std::isfinite(sampleRate) && sampleRate >= 1000.0 ? std::min(sampleRate, 384000.0) : 44100.0;
@@ -44,6 +64,10 @@ public:
     phaseBlendCoef = (float)(1.0 - std::exp(-1.0 / (0.050 * fs)));
     step = fs <= 50000.0 ? 16 : (fs <= 100000.0 ? 32 : 64);
     stepSec = (float)(step / fs);
+    smartStep = std::min(1.f, stepSec / 0.050f);
+    onsetFastCoef = (float)(1.0 - std::exp(-1.0 / (0.003 * fs)));
+    onsetSlowCoef = (float)(1.0 - std::exp(-1.0 / (0.060 * fs)));
+    meterCoef = (float)(1.0 - std::exp(-1.0 / (0.250 * fs)));
     sensitivity.prepare(stepSec);
     updateTimeConstants();
     updateSpread();
@@ -107,6 +131,13 @@ public:
   void reset() {
     clearAnalysis();
     sensitivity.reset();
+    clearSmart();
+    smartBlend = deltaMix = 0.f;
+    diagInput.store(0.f); diagOutput.store(0.f);
+    diagOnsetIn.store(0.f); diagOnsetOut.store(0.f);
+    for (int i = 0; i < kBands; ++i) {
+      diagOverlap[i].store(0.f); diagProtection[i].store(0.f);
+    }
     detectorBlend = 0.f;
     std::copy(anaPowCoef, anaPowCoef + nb, activePowCoef);
     std::memset(env, 0, sizeof env);
@@ -134,6 +165,10 @@ public:
     p.amount = fin(p.amount, 0.f, 1.f, 0.f);
     p.smooth = fin(p.smooth, 0.f, 1.f, 0.f);
     p.levelSensitivity = fin(p.levelSensitivity, 0.f, 1.f, 0.f);
+    p.smart = fin(p.smart, 0.f, 1.f, 0.f);
+    p.punchProtect = fin(p.punchProtect, 0.f, 1.f, 0.f);
+    p.bassProtect = fin(p.bassProtect, 0.f, 1.f, 0.f);
+    p.adaptiveRelease = fin(p.adaptiveRelease, 0.f, 1.f, 0.f);
     p.pan = fin(p.pan, -1.f, 1.f, 0.f);
     p.attackMs = fin(p.attackMs, 1.f, 200.f, 10.f);
     p.releaseMs = fin(p.releaseMs, 5.f, 2000.f, 150.f);
@@ -212,6 +247,17 @@ public:
         }
         analyse(d);
       }
+      const bool smartActive = params.smart > 0.f || smartBlend > 0.f;
+      if (smartActive) {
+        analyseMain(0, DetectorResponse::safeKey(x0));
+        if (nCh > 1) analyseMain(1, DetectorResponse::safeKey(x1));
+        const float u0 = DetectorResponse::safeKey(x0), u1 = DetectorResponse::safeKey(x1);
+        const float pwr = std::max(u0*u0, u1*u1);
+        onsetFast += (pwr - onsetFast) * onsetFastCoef;
+        onsetSlow += (pwr - onsetSlow) * onsetSlowCoef;
+        onsetFast = onsetFast < 1e-20f ? 0.f : onsetFast;
+        onsetSlow = onsetSlow < 1e-20f ? 0.f : onsetSlow;
+      }
       feedDisplay(nCh > 1 ? 0.5f * (x0 + x1) : x0, d);
 
       float y0 = x0, y1 = x1;
@@ -233,6 +279,16 @@ public:
       if (guardGain < 1.f) { guardGain += (1.f - guardGain) * guardRelease; if (guardGain > 0.99999f) guardGain = 1.f; }
       if (outPk * guardGain > guardPk) guardGain = guardPk / outPk;
       if (guardGain < 1.f) { y0 *= guardGain; y1 *= guardGain; }
+      if (smartActive) updateMeters(x0, x1, y0, y1);
+      // Delta is the exact dry minus the normal processed signal, after the
+      // overshoot guard. No gain boost or extra buffering. Fade monitor changes.
+      if (deltaMix != 0.f || params.deltaListen) {
+        deltaMix = params.deltaListen ? std::min(1.f, deltaMix + mixStep)
+                                      : std::max(0.f, deltaMix - mixStep);
+        const float diff0 = x0 - y0, diff1 = x1 - y1;
+        if (deltaMix == 1.f) { y0 = diff0; y1 = diff1; }
+        else { y0 += (diff0 - y0) * deltaMix; y1 += (diff1 - y1) * deltaMix; }
+      }
       main[0][i] = y0;
       if (nCh > 1) main[1][i] = y1;
 
@@ -355,6 +411,53 @@ private:
     std::memset(anaS, 0, sizeof anaS);
     std::memset(anaPow, 0, sizeof anaPow);
   }
+  void clearSmart() {
+    std::memset(mainAnaS, 0, sizeof mainAnaS);
+    std::memset(mainAnaPow, 0, sizeof mainAnaPow);
+    onsetFast = onsetSlow = meterIn = meterOut = meterOnsetIn = meterOnsetOut = 0.f;
+    prevIn[0] = prevIn[1] = prevOut[0] = prevOut[1] = 0.f;
+  }
+  void analyseMain(int ch, float x) {
+    // Match the two-stage key bank; maintain separate stereo histories so
+    // anti-phase instrumentals cannot disappear from the overlap detector.
+    x += 1e-25f;
+    float* __restrict s0 = mainAnaS[ch][0];
+    float* __restrict s1 = mainAnaS[ch][1];
+    float* __restrict s2 = mainAnaS[ch][2];
+    float* __restrict s3 = mainAnaS[ch][3];
+    float* __restrict pw = mainAnaPow[ch];
+    for (int i = 0; i < nb; ++i) {
+      const float a1 = anaA1[i], a2 = anaA2[i], a3 = anaA3[i];
+      float v3 = x - s1[i], v1 = a1 * s0[i] + a2 * v3;
+      float v2 = s1[i] + a2 * s0[i] + a3 * v3;
+      s0[i] = 2.f * v1 - s0[i]; s1[i] = 2.f * v2 - s1[i];
+      v3 = v1 * anaK[i] - s3[i];
+      v1 = a1 * s2[i] + a2 * v3;
+      v2 = s3[i] + a2 * s2[i] + a3 * v3;
+      s2[i] = 2.f * v1 - s2[i]; s3[i] = 2.f * v2 - s3[i];
+      const float z = v1 * anaK[i];
+      pw[i] += (z*z - pw[i]) * anaPowCoef[i] + 1e-30f;
+    }
+  }
+  float onsetStrength() const {
+    return smoothstep((onsetFast - onsetSlow * 1.5f) / std::max(onsetFast, 1e-10f));
+  }
+  void updateMeters(float x0, float x1, float y0, float y1) {
+    const float x[2] = {DetectorResponse::safeKey(x0), DetectorResponse::safeKey(x1)};
+    const float y[2] = {DetectorResponse::safeKey(y0), DetectorResponse::safeKey(y1)};
+    float pi = 0.f, po = 0.f, di = 0.f, dout = 0.f;
+    for (int c = 0; c < 2; ++c) {
+      pi += x[c]*x[c]; po += y[c]*y[c];
+      const float dx = x[c] - prevIn[c], dy = y[c] - prevOut[c];
+      di += dx*dx; dout += dy*dy;
+      prevIn[c] = x[c]; prevOut[c] = y[c];
+    }
+    const float onset = onsetStrength();
+    meterIn += (pi - meterIn) * meterCoef;
+    meterOut += (po - meterOut) * meterCoef;
+    meterOnsetIn += (di * onset - meterOnsetIn) * meterCoef;
+    meterOnsetOut += (dout * onset - meterOnsetOut) * meterCoef;
+  }
   void resetBells() { for (auto& c : bell) for (auto& b : c) { b.ic1 = b.ic2 = 0.f; } }
 
   void buildBand() {
@@ -426,6 +529,24 @@ private:
     for (auto& c : scHp) for (auto& f : c) f.flush();
     for (auto& c : scLp) for (auto& f : c) f.flush();
     const float aCoef = attackCoef, rCoef = releaseCoef, peakDecay = peakDecayCoef;
+    const float oldSmart = smartBlend;
+    smartBlend = params.smart > smartBlend ? std::min(params.smart, smartBlend + smartStep)
+                                           : std::max(params.smart, smartBlend - smartStep);
+    if (oldSmart > 0.f && smartBlend == 0.f) {
+      clearSmart();
+      for (int i = 0; i < kBands; ++i) {
+        diagOverlap[i].store(0.f, std::memory_order_relaxed);
+        diagProtection[i].store(0.f, std::memory_order_relaxed);
+      }
+    }
+    float mainPeak = 0.f;
+    if (smartBlend > 0.f) {
+      for (int i = 0; i < nb; ++i) {
+        const float m = mainAnaPow[0][i] + (nCh > 1 ? mainAnaPow[1][i] : mainAnaPow[0][i]);
+        mainPeak = std::max(mainPeak, m * density[i]);
+      }
+    }
+    const float onset = smartBlend > 0.f ? onsetStrength() : 0.f;
     {
       float ps[kBands], curPeak = 0.f;
       for (int i = 0; i < nb; ++i) {
@@ -463,10 +584,32 @@ private:
         const float legacy = rel * gate;
         // Keep the disabled path exactly the previous expression. Apply the new
         // independent knee before the existing attack/release and overlap solver.
-        const float t = blend > 0.f ? legacy * LevelSensitivity::scale(ps[i], blend) : legacy;
+        float t = blend > 0.f ? legacy * LevelSensitivity::scale(ps[i], blend) : legacy;
+        float ac = aCoef, rc = rCoef;
+        if (smartBlend > 0.f) {
+          const float m = mainAnaPow[0][i] + (nCh > 1 ? mainAnaPow[1][i] : mainAnaPow[0][i]);
+          // Relative main occupancy plus absolute floor: absent material should
+          // not trigger unnecessary cuts; a broadband bed remains eligible.
+          const float occupancy = smoothstep((m * density[i]) / std::max(0.025f * mainPeak, 1e-10f));
+          const float conflict = occupancy * legacy;
+          const float low = 1.f - smoothstep((fc[i] - 55.f) / 125.f);
+          const float punch = params.punchProtect * onset * 0.80f;
+          const float bass = params.bassProtect * low * (1.f - 0.75f * conflict);
+          const float keep = (1.f - punch) * (1.f - bass);
+          const float factor = occupancy * keep;
+          t *= 1.f + smartBlend * (factor - 1.f);
+          // More rapid recovery when the key fades or an instrumental onset
+          // needs protection; bass recovers less aggressively than upper bands.
+          const float timing = smartBlend * params.adaptiveRelease;
+          const float recovery = timing * (1.f - legacy) * (0.35f + 0.65f * (1.f - low));
+          rc += (rc*rc*rc - rc) * std::max(recovery, smartBlend * punch);
+          ac += (1.f - ac) * timing * low * 0.35f;
+          diagOverlap[i].store(conflict, std::memory_order_relaxed);
+          diagProtection[i].store(smartBlend * (1.f - keep), std::memory_order_relaxed);
+        }
         if (!params.freeze) {
           float& e = env[i];
-          const float cf = t > e ? aCoef : rCoef;
+          const float cf = t > e ? ac : rc;
           e = t + (e - t) * cf;
           if (e < 1.0e-4f && t < 1.0e-4f) e = 0.f;
         }
@@ -542,6 +685,10 @@ private:
     dispPos = (dispPos + 1) & (kDispN - 1);
     if (++dispCount >= kDispN / 2) {
       dispCount = 0;
+      diagInput.store(meterIn, std::memory_order_relaxed);
+      diagOutput.store(meterOut, std::memory_order_relaxed);
+      diagOnsetIn.store(meterOnsetIn, std::memory_order_relaxed);
+      diagOnsetOut.store(meterOnsetOut, std::memory_order_relaxed);
       for (int c = 0; c < kMaxCh; ++c)
         for (int j = 0; j < kBands; ++j)
           dispApplied[c][j].store(applied[c][j], std::memory_order_relaxed);
@@ -599,6 +746,14 @@ private:
   double fs = 48000.0;
   SpacerParams params;
   LevelSensitivity sensitivity;
+  float smartBlend = 0.f, smartStep = 0.f, deltaMix = 0.f;
+  float onsetFastCoef = 0.f, onsetSlowCoef = 0.f, meterCoef = 0.f;
+  float onsetFast = 0.f, onsetSlow = 0.f;
+  float mainAnaS[kMaxCh][4][kBands] = {}, mainAnaPow[kMaxCh][kBands] = {};
+  float meterIn = 0.f, meterOut = 0.f, meterOnsetIn = 0.f, meterOnsetOut = 0.f;
+  float prevIn[2] = {}, prevOut[2] = {};
+  std::atomic<float> diagOverlap[kBands], diagProtection[kBands];
+  std::atomic<float> diagInput{0.f}, diagOutput{0.f}, diagOnsetIn{0.f}, diagOnsetOut{0.f};
   int nb = kBands, step = 16, stepCount = 0;
   float stepSec = 0.f, mix = 0.f, mixStep = 0.002f, peak = 0.f;
   float guardPk = 0.f, guardGain = 1.f, guardDecay = 0.99f, guardRelease = 0.01f;

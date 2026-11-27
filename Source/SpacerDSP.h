@@ -23,6 +23,8 @@ struct SpacerParams {
   bool ms = false;           // false = L/R, true = M/S
   bool freeze = false;
   bool power = true;
+  float smart = 0.f, punchProtect = 0.f, bassProtect = 0.f, adaptiveRelease = 0.f;
+  bool deltaListen = false;
   float levelSensitivity = 0.f; // 0..1: legacy relative spectrum -> absolute-level-sensitive depth
 };
 

@@ -49,6 +49,13 @@ jobs:
           ./detector_response_test | tee quality-artifacts/detector-response.txt
           g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I prior_response tests/detector_response_test.cpp -o detector_response_san
           ./detector_response_san
+      - name: Smart Space overlap diagnostics and delta reconstruction
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/smart_space_test.cpp -o smart_space_test
+          set -o pipefail
+          ./smart_space_test | tee quality-artifacts/smart-space.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/smart_space_test.cpp -o smart_space_san
+          ./smart_space_san
       - name: Verify compatibility parameter IDs
         run: python3 tests/parameter_contract_test.py
       - name: Strict VST3 moduleinfo normalizer regression

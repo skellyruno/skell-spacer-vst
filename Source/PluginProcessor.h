@@ -27,6 +27,7 @@ public:
   void setStateInformation(const void*, int) override;
 
   void readSpectrum(float* mainDb, float* sideDb, float* cutDb) const;
+  skell::ZeroLatencyEngine::SmartSnapshot readSmartSnapshot() const { return engine.getSmartSnapshot(); }
   bool isSidechainActive() const { return sidechainActive.load(std::memory_order_relaxed); }
   double getCurrentSampleRate() const { return sampleRateHz.load(std::memory_order_relaxed); }
 
@@ -40,6 +41,7 @@ public:
 private:
   skell::ZeroLatencyEngine engine;      // zero latency: the plugin never reports a delay to the host
   std::atomic<float> *pAmount{}, *pSmooth{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{}, *pPan{}, *pMs{}, *pListen{}, *pScLow{}, *pScHigh{}, *pLevelSensitivity{};
+  std::atomic<float> *pSmart{}, *pPunch{}, *pBass{}, *pAdaptive{}, *pDelta{};
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};

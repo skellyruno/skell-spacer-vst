@@ -38,6 +38,11 @@ SkellAudioProcessor::SkellAudioProcessor()
   pScLow = parameters.getRawParameterValue("schp");
   pScHigh = parameters.getRawParameterValue("sclp");
   pLevelSensitivity = parameters.getRawParameterValue("levelSensitivity");
+  pSmart = parameters.getRawParameterValue("smartSpace");
+  pPunch = parameters.getRawParameterValue("punchProtect");
+  pBass = parameters.getRawParameterValue("bassProtect");
+  pAdaptive = parameters.getRawParameterValue("adaptiveRelease");
+  pDelta = parameters.getRawParameterValue("deltaListen");
   setLatencySamples(0);
 }
 
@@ -95,6 +100,12 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"levelSensitivity", 2}, "Level Sensitivity",
     juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 0.0f,
     AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
+  // All additions are versioned; Classic remains the default.
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"smartSpace", 3}, "Smart Space", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"punchProtect", 3}, "Punch Protect", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"bassProtect", 3}, "808 Protection", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"adaptiveRelease", 3}, "Adaptive Release", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"deltaListen", 3}, "Delta Listen", false));
   return layout;
 }
 
@@ -139,6 +150,12 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.power = pPower->load() > 0.5f;
   p.pan = pPan->load() * 0.01f;  // host Pan -100..100 -> engine -1..1
   p.ms = pMs->load() > 0.5f;
+  p.smart = pSmart->load() * 0.01f;
+  p.punchProtect = pPunch->load() * 0.01f;
+  p.bassProtect = pBass->load() * 0.01f;
+  p.adaptiveRelease = pAdaptive->load() * 0.01f;
+  const bool listenRequested = pListen->load() > 0.5f;
+  p.deltaListen = pDelta->load() > 0.5f && !listenRequested;
   engine.setParams(p);
 
   auto mainBuf = getBusBuffer(buffer, true, 0);
@@ -166,7 +183,7 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   // Listen: monitor the sidechain (as the detector hears it, after its filters) instead of the track, with a 10 ms
   // crossfade; when a host drops the bus, fade the detector tail to dry rather
   // than instantly jumping back to the track. Work in fixed chunks; no allocation.
-  const float listenTarget = (pListen->load() > 0.5f && nSc > 0) ? 1.f : 0.f;
+  const float listenTarget = (listenRequested && nSc > 0) ? 1.f : 0.f;
   const float listenStep = (float) (1.0 / (0.010 * juce::jmax(1000.0, sampleRateHz.load())));
   const float tailDecay = (float) std::exp(-1.0 / (0.004 * juce::jmax(1000.0, sampleRateHz.load())));
   for (int pos = 0; pos < n; pos += kChunk) {
@@ -211,6 +228,14 @@ void SkellAudioProcessor::setStateInformation(const void* data, int size) {
         legacyDefault.setProperty("id", "levelSensitivity", nullptr);
         legacyDefault.setProperty("value", 0.0f, nullptr);
         state.appendChild(legacyDefault, nullptr);
+      }
+      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen"}) {
+        if (!state.getChildWithProperty("id", id).isValid()) {
+          juce::ValueTree legacyDefault("PARAM");
+          legacyDefault.setProperty("id", id, nullptr);
+          legacyDefault.setProperty("value", 0.0f, nullptr);
+          state.appendChild(legacyDefault, nullptr);
+        }
       }
       parameters.replaceState(state);
     }

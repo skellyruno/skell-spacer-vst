@@ -23,4 +23,5 @@ assert ids == required, f"unexpected changes to version-1 IDs: {ids ^ required}"
 assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*2\}', processor) == ["levelSensitivity"]
 assert re.search(r'p\.levelSensitivity\s*=\s*pLevelSensitivity->load\(\)\s*\*\s*0\.01f\s*;', processor)
 assert 'getChildWithProperty("id", "levelSensitivity")' in processor
-print(f"[PASS] V16 contract: {len(required)} legacy parameters + 1 additive version-2 parameter, VST3 identity")
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*3\}', processor) == ["smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen"]
+print(f"[PASS] V16 contract: {len(required)} legacy parameters + 1 version-2 + 5 version-3 parameters, VST3 identity")
