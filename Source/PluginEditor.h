@@ -17,6 +17,15 @@ public:
   void drawButtonText(juce::Graphics&, juce::TextButton&, bool highlighted, bool down) override;
 };
 
+// Standard single-value controls with scale-aware fonts, separate from the
+// range-slider skin (which deliberately draws two handles).
+class SmartLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+  juce::Font getComboBoxFont(juce::ComboBox&) override;
+  juce::Font getLabelFont(juce::Label&) override;
+  int getSliderThumbRadius(juce::Slider&) override;
+};
+
 class SpectrumView final : public juce::Component {
 public:
   explicit SpectrumView(SkellAudioProcessor& p) : proc(p) {}
@@ -78,6 +87,7 @@ private:
   juce::Slider amount, smooth, pan, attack, release;
   juce::TextButton freeze { "Freeze" }, power { "Power" }, listen { "Listen" }, skinButton, msToggle, bandToggle;
   juce::TextButton smartPageButton {"Smart"}, deltaButton {"Delta"};
+  SmartLookAndFeel smartLook;
   juce::ComboBox smartSelector;
   juce::Slider smartValue;
   std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> smartValueA;

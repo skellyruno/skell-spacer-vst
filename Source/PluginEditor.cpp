@@ -164,6 +164,16 @@ void SkellLookAndFeel::drawButtonText(juce::Graphics& g, juce::TextButton& butto
                    juce::Justification::centred, 1, 0.85f);
 }
 
+juce::Font SmartLookAndFeel::getComboBoxFont(juce::ComboBox& c) {
+  return makeFont(juce::jlimit(10.f,32.f,.53f*(float)c.getHeight()),false,.01f);
+}
+juce::Font SmartLookAndFeel::getLabelFont(juce::Label& l) {
+  return makeFont(juce::jlimit(10.f,32.f,.58f*(float)l.getHeight()),false,.01f);
+}
+int SmartLookAndFeel::getSliderThumbRadius(juce::Slider& s) {
+  return juce::jlimit(5,20,juce::roundToInt(.24f*(float)s.getHeight()));
+}
+
 // ---------------------------------------------------------------- spectrum
 void SpectrumView::tick() {
   const double now = juce::Time::getMillisecondCounterHiRes();
@@ -206,21 +216,26 @@ void SpectrumView::paint(juce::Graphics& g) {
   g.fillRect(r);
 
   auto area = r.reduced(8.0f * s, 10.0f * s);
+  auto heatArea = smartView ? area.removeFromBottom(17.f*s) : juce::Rectangle<float>();
   auto xAt = [&](int i) { return area.getX() + area.getWidth() * (float) i / (N - 1); };
   auto xHz = [&](float f) { return area.getX() + area.getWidth() * std::log(f / 20.0f) / std::log(1000.0f); };
 
-  // Heatmap lives behind the actual spectrum. Amber = conflict, accent =
-  // protected target. The existing cut curve shows actual attenuation.
+  // Two frequency-aligned, dedicated lanes remain legible under every skin.
+  // Amber = conflict, accent = protection. Cut remains the response curve.
   if (smartView) {
+    const float laneH=5.f*s;
+    g.setColour(kLine.withAlpha(.65f));
+    g.fillRect(heatArea.getX(),heatArea.getY()+3.f*s,heatArea.getWidth(),laneH);
+    g.fillRect(heatArea.getX(),heatArea.getY()+11.f*s,heatArea.getWidth(),laneH);
     for (int i=0;i<skell::ZeroLatencyEngine::kBands;++i) {
       const float lo=20.f*std::exp2((float)i/skell::ZeroLatencyEngine::kBandsPerOct);
       const float hi=20.f*std::exp2((float)(i+1)/skell::ZeroLatencyEngine::kBandsPerOct);
       if (lo>=20000.f) break;
       const float x=xHz(lo), width=std::max(0.f,xHz(std::min(hi,20000.f))-x);
-      g.setColour(kWarn.withAlpha(.36f*juce::jlimit(0.f,1.f,overlap[i])));
-      g.fillRect(x,area.getY()+17.f*s,width,area.getHeight()-32.f*s);
-      g.setColour(kAccent.withAlpha(.85f*juce::jlimit(0.f,1.f,protection[i])));
-      g.fillRect(x,area.getBottom()-20.f*s,width,3.f*s);
+      const float conflict=juce::jlimit(0.f,1.f,overlap[i]);
+      const float protect=juce::jlimit(0.f,1.f,protection[i]);
+      if (conflict>0.f) { g.setColour(kWarn.withAlpha(std::sqrt(conflict))); g.fillRect(x,heatArea.getY()+3.f*s,width,laneH); }
+      if (protect>0.f) { g.setColour(kAccent.withAlpha(std::sqrt(protect))); g.fillRect(x,heatArea.getY()+11.f*s,width,laneH); }
     }
   }
   const char* labs[] = { "100", "1k", "10k" }; int li = 0;
@@ -273,24 +288,25 @@ void SpectrumView::paint(juce::Graphics& g) {
   if (hi < 19500.0f) g.fillRect(juce::Rectangle<float>(xHz(hi), area.getY(), area.getRight() - xHz(hi), area.getHeight()));
 
   {   // legend, on a backing plate so the curves don't cut through it
-    const struct { const char* name; int kind; } items[] = { { "CUT", 2 }, { "SIDECHAIN", 1 }, { "TRACK", 0 } };
+    const struct { const char* name; int kind; } items[] = { { "CUT", 2 }, { "KEY", 1 }, { "TRACK", 0 }, { "CONFLICT", 3 }, { "PROTECT", 4 } };
+    const int count=smartView?5:3;
     const auto legendFont = makeFont(9.0f * s, true, 0.1f);
-    float widths[3], total = 0.0f;
-    for (int i = 0; i < 3; ++i) { widths[i] = textWidth(legendFont, items[i].name) * 1.12f + 3.0f * s; total += widths[i] + 19.0f * s; }
+    float widths[5], total = 0.0f;
+    for (int i = 0; i < count; ++i) { widths[i] = textWidth(legendFont, items[i].name) * 1.12f + 3.0f * s; total += widths[i] + 19.0f * s; }
     float lx = area.getRight() - 4.0f * s;
     g.setColour(kBg.withAlpha(0.8f));
     g.fillRect(juce::Rectangle<float>(lx - total - 2.0f * s, area.getBottom() - 16.0f * s, total + 6.0f * s, 15.0f * s));
-    for (int i = 0; i < 3; ++i) {
+    for (int i = 0; i < count; ++i) {
       lx -= widths[i];
       drawText(g, items[i].name, { lx, area.getBottom() - 13.0f * s, widths[i] + 2.0f * s, 11.0f * s }, 9.0f * s, true, kBoneDim, juce::Justification::centredLeft, 0.1f);
       lx -= 11.0f * s;
-      const juce::Rectangle<float> sw(8.0f * s, items[i].kind == 0 ? 7.0f * s : 2.0f * s);
-      g.setColour(items[i].kind == 2 ? kAccent : (items[i].kind == 1 ? kBone : kBoneDim));
+      const juce::Rectangle<float> sw(8.0f * s, (items[i].kind == 0 || items[i].kind >=3) ? 7.0f * s : 2.0f * s);
+      g.setColour(items[i].kind == 3 ? kWarn : (items[i].kind == 2 || items[i].kind == 4 ? kAccent : (items[i].kind == 1 ? kBone : kBoneDim)));
       g.fillRect(sw.withCentre({ lx + 4.0f * s, area.getBottom() - 7.5f * s }));
       lx -= 8.0f * s;
     }
   }
-  const auto readout = "MAX CUT  " + juce::String(-peakCut, 1) + " dB";
+  const auto readout = "MAX CUT  " + juce::String(peakCut<.05f?0.f:-peakCut, 1) + " dB";
   drawText(g, readout, { area.getX() + 4.0f * s, area.getY() + 1.0f * s, 160.0f * s, 12.0f * s },
            10.0f * s, true, kAccent, juce::Justification::centredLeft, 0.1f);
 
@@ -457,6 +473,8 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
   smartPageButton.setTooltip("Open the advanced Smart Space controls and diagnostics; does not change the sound");
   deltaButton.setTooltip("Monitor dry minus processed audio. Sidechain Listen takes priority");
   smartPageButton.onClick=[this]{showSmartPage(smartPageButton.getToggleState());};
+  smartSelector.setLookAndFeel(&smartLook);
+  smartValue.setLookAndFeel(&smartLook);
   smartSelector.setComponentID("smart_selector");
   for(int i=0;i<smartControlCount;++i) smartSelector.addItem(smartControls[i].name,i+1);
   smartSelector.setSelectedId(1,juce::dontSendNotification);
@@ -476,6 +494,7 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
 
 SkellAudioProcessorEditor::~SkellAudioProcessorEditor() {
   stopTimer();
+  smartSelector.setLookAndFeel(nullptr); smartValue.setLookAndFeel(nullptr);
   for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &pan, &attack, &release, &band.slider, &scBand.slider, &freeze, &power, &listen, &msToggle, &bandToggle, &skinButton, &smartPageButton, &deltaButton })
     c->setLookAndFeel(nullptr);
 }
@@ -547,6 +566,9 @@ void SkellAudioProcessorEditor::timerCallback() {
   // require a desktop peer before refreshing the spectrum.
   spectrum.tick();
   if (smartPage) repaintDesign({14.f,256.f,522.f,104.f});
+  const bool smartOn=proc.parameters.getRawParameterValue("smartSpace")->load()>0.f;
+  const juce::String smartLabel=smartOn?"Smart+":"Smart";
+  if (smartPageButton.getButtonText()!=smartLabel) smartPageButton.setButtonText(smartLabel);
   const int lit = juce::jlimit(0, 48, juce::roundToInt(spectrum.maxCutDb() / skell::ZeroLatencyEngine::kMaxCutDb * 48.0f));
   if (lit != previousMeterSegments) {
     previousMeterSegments = lit;
@@ -605,9 +627,12 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
   // controls card
   drawCard(g, { 14.0f, 256.0f, 522.0f, 104.0f });
   if (smartPage) {
-    drawText(g,"SMART SPACE  /  EXPERIMENTAL",{28.f,262.f,494.f,14.f},10.f,true,kBoneDim,juce::Justification::centredLeft,.1f);
     const auto& d=spectrum.smartData();
     const bool active=proc.parameters.getRawParameterValue("smartSpace")->load()>0.f;
+    drawText(g,active?"SMART SPACE  /  EXPERIMENTAL":"SMART SPACE OFF  /  SET STRENGTH",{28.f,262.f,320.f,14.f},10.f,true,kBoneDim,juce::Justification::centredLeft,.1f);
+    const bool keyMonitor=proc.parameters.getRawParameterValue("listen")->load()>.5f;
+    const bool deltaMonitor=proc.parameters.getRawParameterValue("deltaListen")->load()>.5f;
+    drawText(g,keyMonitor?"KEY LISTEN":deltaMonitor?"DELTA  /  DRY - WET":"WET SIGNAL",{355.f,262.f,167.f,14.f},9.5f,true,keyMonitor||deltaMonitor?kAccent:kBoneDim,juce::Justification::centredRight,.06f);
     const auto label=[&](const juce::String& name,const juce::String& value,float x){
       drawText(g,name,{x,316.f,155.f,12.f},9.5f,true,kBoneDim,juce::Justification::centred,.08f);
       drawText(g,active?value:juce::String("--"),{x,330.f,155.f,18.f},13.f,true,kAccent,juce::Justification::centred);
@@ -660,6 +685,7 @@ void SkellAudioProcessorEditor::resized() {
   deltaButton.setBounds(fit(340.f,14.f,58.f,22.f));
   smartSelector.setBounds(fit(29.f,280.f,190.f,28.f));
   smartValue.setBounds(fit(231.f,280.f,291.f,28.f));
+  smartValue.setTextBoxStyle(juce::Slider::TextBoxRight,false,juce::roundToInt(56.f*s),juce::roundToInt(24.f*s));
   spectrum.setBounds(fit(28.0f, 90.0f, 494.0f, 152.0f));
   const float cellW = 522.0f / 5.0f, kd = 62.0f;
   juce::Slider* knobs[5] = { &amount, &smooth, &pan, &attack, &release };

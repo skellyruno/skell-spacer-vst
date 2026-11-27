@@ -101,6 +101,18 @@ public:
       fastPowCoef[i] = DetectorResponse::fastCoefficient(fs, fc[i]);
       density[i] = 1000.0f / fc[i];                 // 1 / bandwidth: every band is 1/8 octave wide in Hz
     }
+    // Auditory geometry depends only on the prepared band centers. Reuse
+    // the exact coefficients and normalization sum on the control thread.
+    for (int i=0;i<nb;++i) {
+      float sum=0.f;
+      earLo[i]=std::max(0,i-8); earHi[i]=std::min(nb-1,i+8);
+      for (int j=earLo[i];j<=earHi[i];++j) {
+        const float w=j==i?0.f:MixIntelligence::auditoryWeight(fc[i],fc[j]);
+        earWeight[i][j-i+8]=w;
+        sum+=w;
+      }
+      earSum[i]=std::max(sum,1e-18f);
+    }
     // Neighbouring bells overlap and their cuts add in dB. The cuts are solved for (updateControl) so that the summed
     // response hits the requested depth at every band centre AND halfway between bands: kernC[i][k] / kernM[i][k] say how
     // much of a unit cut on band i+k lands on the centre of band i / on the point between bands i and i+1 (real,
@@ -670,14 +682,13 @@ private:
           if (focusBlend[6] > 0.f) {
             // Local auditory excitation neighborhood. Cap the radius to
             // bound work at every sample rate; no FFT or additional delay.
-            float neighbors=0.f, weights=0.f;
-            for (int j=std::max(0,i-8); j<=std::min(nb-1,i+8); ++j) {
-              if (j==i) continue;
-              const float wEar=MixIntelligence::auditoryWeight(fc[i],fc[j]);
-              neighbors += wEar*2.f*anaPow[j]; weights += wEar;
+            float neighbors=0.f;
+            for (int j=earLo[i];j<=earHi[i];++j) {
+              const float wEar=earWeight[i][j-i+8];
+              if(wEar>0.f) neighbors += wEar*2.f*anaPow[j];
             }
             const float rawKey=2.f*anaPow[i];
-            extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::auditoryNeed(m,rawKey,neighbors/std::max(weights,1e-18f)));
+            extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::auditoryNeed(m,rawKey,neighbors/earSum[i]));
           }
           if (focusBlend[7] > 0.f)
             extra *= SpectralIntelligence::blend(focusBlend[7],MixIntelligence::component(fc[i],onset,conflict));
@@ -888,6 +899,8 @@ private:
   float phaseEnergyCoef = 0.001f, phaseBlendCoef = 0.001f;
   bool msApplied = false, bandDirty = true, anyActive = false, hadSc = false;
   float fc[kBands] = {}, bandWeight[kBands] = {}, bellG[kBands] = {};
+  float earWeight[kBands][17] = {}, earSum[kBands] = {};
+  int earLo[kBands] = {}, earHi[kBands] = {};
   float kernC[kBands][2 * kReach + 1] = {}, kernM[kBands][2 * kReach + 1] = {}, solved[kBands] = {}, lsStep = 0.f;
   float density[kBands] = {}, bellQ[kBands] = {}, anaK[kBands] = {}, anaA1[kBands] = {}, anaA2[kBands] = {}, anaA3[kBands] = {}, anaPowCoef[kBands] = {};
   float fastPowCoef[kBands] = {}, activePowCoef[kBands] = {}, detectorBlend = 0.f;

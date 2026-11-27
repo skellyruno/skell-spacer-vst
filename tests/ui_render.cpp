@@ -7,7 +7,7 @@
 #include <cstdio>
 
 // Hooks that juce_gui_extra normally provides; unused in an offscreen run.
-#if ! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS
+#if defined(SKELL_LEGACY_UI_STUBS) && (! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS)
 namespace juce {
 void privatePostSystemNotification(const String&, const String&) {}
 bool juce_handleXEmbedEvent(ComponentPeer*, void*) { return false; }
@@ -65,7 +65,8 @@ int main(int argc, char** argv) {
     std::printf("[%s] offline Spacer editor demonstration\n",ok?"PASS":"FAIL");
     return ok?0:1;
   }
-  if (argc==4 && juce::String(argv[1])=="--quick4") {
+  if (argc==4 && (juce::String(argv[1])=="--quick4" || juce::String(argv[1])=="--quick4-full")) {
+    const bool full=juce::String(argv[1])=="--quick4-full";
     juce::File out(argv[2]); out.createDirectory();
     SkellAudioProcessor p; p.enableAllBuses(); p.setRateAndBufferSizeDetails(48000.,512); p.prepareToPlay(48000.,512);
     std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
@@ -95,10 +96,16 @@ int main(int argc, char** argv) {
     auto* logo=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="logo";});
     if(!logo)return 1;
     logo->triggerClick(); pump(); feed(p,20); capture("04_alternate_theme.png");
+    if(full) {
+      select->setSelectedId(12,juce::sendNotificationSync); pump();
+      ed->setSize(396,324); capture("05_smart_minimum.png");
+      ed->setSize(990,810); capture("06_smart_maximum.png");
+      ed->setSize(SkellAudioProcessorEditor::defaultWidth,SkellAudioProcessorEditor::defaultHeight);
+    }
     juce::DynamicObject::Ptr meta(new juce::DynamicObject());
     meta->setProperty("revision",juce::String(argv[3]));
     meta->setProperty("renderer","real SkellAudioProcessorEditor");
-    meta->setProperty("frame_count",4);
+    meta->setProperty("frame_count",full?6:4);
     meta->setProperty("failures",failures);
     meta->setProperty("width",ed->getWidth()*2); meta->setProperty("height",ed->getHeight()*2);
     out.getChildFile("manifest.json").replaceWithText(juce::JSON::toString(juce::var(meta.get())));

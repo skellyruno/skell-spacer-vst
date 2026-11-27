@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <thread>
 
-#if ! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS
+#if defined(SKELL_LEGACY_UI_STUBS) && (! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS)
 namespace juce {
 void privatePostSystemNotification(const String&, const String&) {}
 bool juce_handleXEmbedEvent(ComponentPeer*, void*) { return false; }

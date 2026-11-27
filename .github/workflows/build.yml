@@ -31,6 +31,15 @@ jobs:
           path: offline-source/
           if-no-files-found: error
           retention-days: 7
+      - name: Smart Engine cached auditory geometry parity and four-instance benchmark
+        run: |
+          mkdir -p prior_smart quality-artifacts
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence; do
+            git show 0de3ef21f9692bcac918e23d7da9095e2de8aea3:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > prior_smart/$h.h
+          done
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I . tests/smart_efficiency_test.cpp -o smart_efficiency_test
+          set -o pipefail
+          ./smart_efficiency_test | tee quality-artifacts/smart-efficiency.txt
       - name: Baseline parity and four-instance DSP benchmark
         run: |
           mkdir -p baseline quality-artifacts
