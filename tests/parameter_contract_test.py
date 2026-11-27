@@ -30,4 +30,5 @@ assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*6\}', processor) == ["tempoR
 header=(root/"Source/PluginProcessor.h").read_text()
 assert re.findall(r'"(protect\d\d)"',header)==[f"protect{i:02d}" for i in range(21)]
 assert 'juce::ParameterID{protectionIds[i],6}' in processor
-print(f"[PASS] {len(required)} legacy parameters + 15 earlier additions + 22 version-6 parameters, VST3 identity")
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*7\}', processor) == ["cleanKey", "phaseProtect", "stereoDetail"]
+print(f"[PASS] {len(required)} legacy parameters + 15 earlier additions + 22 version-6 + 3 version-7 parameters, VST3 identity")

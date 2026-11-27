@@ -139,11 +139,20 @@ int main(int argc, char** argv) {
       p.setStateInformation(savedSkin.getData(),static_cast<int>(savedSkin.getSize())); pump(100);
       check(select->findColour(juce::ComboBox::backgroundColourId)==juce::Colour(0xffdcd7c8),"Host-restored theme refreshes open Smart controls");
       capture("09_clean_theme.png");
+      p.setTheme(0);pump();
+      const char* researchIds[]={"cleanKey","phaseProtect","stereoDetail"};
+      const char* researchNames[]={"10_clean_key.png","11_phase_protect.png","12_stereo_detail.png"};
+      for(int i=0;i<3;++i) {
+        select->setSelectedId(16+i,juce::sendNotificationSync);pump();
+        value->setValue(65.,juce::sendNotificationSync);
+        check(std::abs(p.parameters.getRawParameterValue(researchIds[i])->load()-65.f)<.2f,juce::String(researchIds[i])+" UI binding");
+        feed(p,30);capture(researchNames[i]);
+      }
     }
     juce::DynamicObject::Ptr meta(new juce::DynamicObject());
     meta->setProperty("revision",juce::String(argv[3]));
     meta->setProperty("renderer","real SkellAudioProcessorEditor");
-    meta->setProperty("frame_count",full?9:4);
+    meta->setProperty("frame_count",full?12:4);
     meta->setProperty("failures",failures);
     meta->setProperty("width",ed->getWidth()*2); meta->setProperty("height",ed->getHeight()*2);
     out.getChildFile("manifest.json").replaceWithText(juce::JSON::toString(juce::var(meta.get())));

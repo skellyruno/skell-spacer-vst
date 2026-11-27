@@ -31,6 +31,28 @@ jobs:
           path: offline-source/
           if-no-files-found: error
           retention-days: 7
+      - name: Key intelligence and linked stereo detail regression
+        run: |
+          mkdir -p unlinked prior_current quality-artifacts
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/key_intelligence_test.cpp -o key_intelligence_test
+          set -o pipefail
+          ./key_intelligence_test | tee quality-artifacts/key-intelligence.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/key_intelligence_test.cpp -o key_intelligence_san
+          ./key_intelligence_san
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve KeyIntelligence; do
+            sed -e 's/namespace skell/namespace unlinked_skell/g' -e 's/detailLinked=true/detailLinked=false/g' Source/$h.h > unlinked/$h.h
+          done
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I . tests/stereo_detail_efficiency.cpp -o stereo_detail_efficiency
+          ./stereo_detail_efficiency | tee quality-artifacts/stereo-detail-efficiency.txt
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve; do
+            git show 03e7d16bd5cdbb13066c455ad9e34fc5d7ee8d9a:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > prior_current/$h.h
+          done
+          mkdir -p immediate-parent/prior_smart
+          cp prior_current/*.h immediate-parent/prior_smart/
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I immediate-parent tests/smart_efficiency_test.cpp -o current_parity
+          ./current_parity | tee quality-artifacts/immediate-parent-parity.txt
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tools/render_research.cpp -o render_research
+          python3 -m py_compile tools/mix_research.py tools/score_external_reference.py tests/research_tools_test.py
       - name: Smart Engine cached auditory geometry parity and four-instance benchmark
         run: |
           mkdir -p prior_smart quality-artifacts

@@ -52,6 +52,9 @@ SkellAudioProcessor::SkellAudioProcessor()
   pEar = parameters.getRawParameterValue("humanEar");
   pComponent = parameters.getRawParameterValue("componentProtect");
   pForesight = parameters.getRawParameterValue("foresight");
+  pCleanKey=parameters.getRawParameterValue("cleanKey");
+  pPhaseProtect=parameters.getRawParameterValue("phaseProtect");
+  pStereoDetail=parameters.getRawParameterValue("stereoDetail");
   pTempo=parameters.getRawParameterValue("tempoRecovery");
   for(size_t i=0;i<pProtect.size();++i) pProtect[i]=parameters.getRawParameterValue(protectionIds[i]);
   setLatencySamples(0);
@@ -131,6 +134,9 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
     const auto name="Protect "+freqText(20.f*std::exp2(.5f*static_cast<float>(i)));
     layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{protectionIds[i],6},name,juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   }
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"cleanKey",7},"Clean Key",juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"phaseProtect",7},"Phase Protect",juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"stereoDetail",7},"Stereo Detail",juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   return layout;
 }
 
@@ -189,6 +195,9 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.humanEar = pEar->load() * 0.01f;
   p.componentProtect = pComponent->load() * 0.01f;
   p.foresight = pForesight->load() * 0.01f;
+  p.cleanKey=pCleanKey->load(std::memory_order_relaxed)*.01f;
+  p.phaseProtect=pPhaseProtect->load(std::memory_order_relaxed)*.01f;
+  p.stereoDetail=pStereoDetail->load(std::memory_order_relaxed)*.01f;
   p.tempoRecovery=pTempo->load(std::memory_order_relaxed)*.01f;
   // No assumed BPM. Tempo is optional and only read when the control is active.
   if(p.tempoRecovery>0.f) if(auto* playhead=getPlayHead())
@@ -271,7 +280,7 @@ void SkellAudioProcessor::setStateInformation(const void* data, int size) {
         legacyDefault.setProperty("value", 0.0f, nullptr);
         state.appendChild(legacyDefault, nullptr);
       }
-      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight", "tempoRecovery"}) {
+      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight", "tempoRecovery", "cleanKey", "phaseProtect", "stereoDetail"}) {
         if (!state.getChildWithProperty("id", id).isValid()) {
           juce::ValueTree legacyDefault("PARAM");
           legacyDefault.setProperty("id", id, nullptr);

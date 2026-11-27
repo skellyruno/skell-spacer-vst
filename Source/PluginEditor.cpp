@@ -8,7 +8,8 @@ constexpr SmartControl smartControls[] = {
   {"adaptiveRelease","Adaptive Release"}, {"spectralFocus","Spectral Focus"}, {"vocalFocus","Vocal Focus"},
   {"perceptualFocus","Perceptual Focus"}, {"harmonicProtect","Harmonic Protect"}, {"depthBudget","Adaptive Depth"},
   {"sonicTerritory","Sonic Territory"}, {"humanEar","Human Ear"}, {"componentProtect","Component Protect"},
-  {"foresight","Musical Foresight"}, {"levelSensitivity","Level Sensitivity"}, {"tempoRecovery","Tempo Recovery"}
+  {"foresight","Musical Foresight"}, {"levelSensitivity","Level Sensitivity"}, {"tempoRecovery","Tempo Recovery"},
+  {"cleanKey","Clean Key"}, {"phaseProtect","Phase Protect"}, {"stereoDetail","Stereo Detail"}
 };
 constexpr int smartControlCount = sizeof(smartControls)/sizeof(smartControls[0]);
 juce::Colour protectionInk() { return kBg.getBrightness()>.5f?juce::Colour(0xff7551a5):juce::Colour(0xffbc9af7); }

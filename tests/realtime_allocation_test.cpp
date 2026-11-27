@@ -46,6 +46,7 @@ int main() {
         p.spectralFocus=.8f; p.vocalFocus=.7f; p.perceptualFocus=.6f;
         p.harmonicProtect=.9f; p.depthBudget=.5f;
         p.sonicTerritory=.7f; p.humanEar=.6f; p.componentProtect=.5f; p.foresight=.8f;
+        p.cleanKey=.8f; p.phaseProtect=.7f; p.stereoDetail=static_cast<float>(b%4)/3.f;
         p.tempoRecovery=.8f; p.hostBpm=b%4==0?0.f:90.f+static_cast<float>(b%80);
         p.protect[static_cast<size_t>(b%skell::ProtectionCurve::count)]=.85f;
         p.deltaListen=b%3==0;

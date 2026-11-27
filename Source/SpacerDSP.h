@@ -27,6 +27,7 @@ struct SpacerParams {
   float smart = 0.f, punchProtect = 0.f, bassProtect = 0.f, adaptiveRelease = 0.f;
   float spectralFocus = 0.f, vocalFocus = 0.f, perceptualFocus = 0.f, harmonicProtect = 0.f, depthBudget = 0.f;
   float sonicTerritory = 0.f, humanEar = 0.f, componentProtect = 0.f, foresight = 0.f;
+  float cleanKey=0.f, phaseProtect=0.f, stereoDetail=0.f;
   float tempoRecovery=0.f, hostBpm=0.f;
   ProtectionCurve::Nodes protect{};
   bool deltaListen = false;

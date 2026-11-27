@@ -46,6 +46,7 @@ private:
   std::atomic<float> *pSmart{}, *pPunch{}, *pBass{}, *pAdaptive{}, *pDelta{};
   std::atomic<float> *pSpectral{}, *pVocal{}, *pPerceptual{}, *pHarmonic{}, *pDepth{};
   std::atomic<float> *pTerritory{}, *pEar{}, *pComponent{}, *pForesight{};
+  std::atomic<float> *pCleanKey{}, *pPhaseProtect{}, *pStereoDetail{};
   std::atomic<float>* pTempo{};
   std::array<std::atomic<float>*,skell::ProtectionCurve::count> pProtect{};
   std::atomic<float> hostBpm{0.f};
