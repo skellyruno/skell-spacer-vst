@@ -148,11 +148,18 @@ int main(int argc, char** argv) {
         check(std::abs(p.parameters.getRawParameterValue(researchIds[i])->load()-65.f)<.2f,juce::String(researchIds[i])+" UI binding");
         feed(p,30);capture(researchNames[i]);
       }
+      for(int i=0;i<2;++i) {
+        const char* id=i==0?"humanEar":"componentProtect";
+        select->setSelectedId(11+i,juce::sendNotificationSync);pump();
+        value->setValue(70.,juce::sendNotificationSync);
+        check(std::abs(p.parameters.getRawParameterValue(id)->load()-70.f)<.2f,juce::String(id)+" UI binding");
+        feed(p,30);capture(i==0?"13_human_ear.png":"14_component_protect.png");
+      }
     }
     juce::DynamicObject::Ptr meta(new juce::DynamicObject());
     meta->setProperty("revision",juce::String(argv[3]));
     meta->setProperty("renderer","real SkellAudioProcessorEditor");
-    meta->setProperty("frame_count",full?12:4);
+    meta->setProperty("frame_count",full?14:4);
     meta->setProperty("failures",failures);
     meta->setProperty("width",ed->getWidth()*2); meta->setProperty("height",ed->getHeight()*2);
     out.getChildFile("manifest.json").replaceWithText(juce::JSON::toString(juce::var(meta.get())));

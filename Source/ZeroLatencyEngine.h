@@ -77,6 +77,7 @@ public:
     cleanPeakDecay=std::exp(-stepSec/1.2f);
     cleanHistoryCoef=1.f-std::exp(-stepSec/.045f);
     cleanHoldDecay=std::exp(-stepSec/.180f);
+    componentCoef=1.f-std::exp(-stepSec/.080f);
     onsetFastCoef = (float)(1.0 - std::exp(-1.0 / (0.003 * fs)));
     onsetSlowCoef = (float)(1.0 - std::exp(-1.0 / (0.060 * fs)));
     meterCoef = (float)(1.0 - std::exp(-1.0 / (0.250 * fs)));
@@ -115,14 +116,19 @@ public:
     // Auditory geometry depends only on the prepared band centers. Reuse
     // the exact coefficients and normalization sum on the control thread.
     for (int i=0;i<nb;++i) {
-      float sum=0.f;
+      float sum=0.f, inSum=0.f, outSum=0.f;
       earLo[i]=std::max(0,i-8); earHi[i]=std::min(nb-1,i+8);
       for (int j=earLo[i];j<=earHi[i];++j) {
         const float w=j==i?0.f:MixIntelligence::auditoryWeight(fc[i],fc[j]);
+        const float in=j==i?0.f:MixIntelligence::maskingWeight(fc[j],fc[i]);
+        const float out=j==i?0.f:MixIntelligence::maskingWeight(fc[i],fc[j]);
+        maskIn[i][j-i+8]=in; maskOut[i][j-i+8]=out;
+        inSum+=in; outSum+=out;
         earWeight[i][j-i+8]=w;
         sum+=w;
       }
       earSum[i]=std::max(sum,1e-18f);
+      maskInSum[i]=std::max(inSum,1e-18f); maskOutSum[i]=std::max(outSum,1e-18f);
     }
     // Neighbouring bells overlap and their cuts add in dB. The cuts are solved for (updateControl) so that the summed
     // response hits the requested depth at every band centre AND halfway between bands: kernC[i][k] / kernM[i][k] say how
@@ -261,9 +267,11 @@ public:
       prevIn[1] = prevOut[1] = 0.f;
       // Removed audio channels must never resurrect old IIR states or active
       // indices before the first control tick of a newly negotiated layout.
-      for(auto& b:bell[1]) b=Bell();
-      std::fill(applied[1],applied[1]+kBands,0.f);
-      activeCount[1]=0;
+      if (params.smart>0.f || smartBlend>0.f) {
+        for(auto& b:bell[1]) b=Bell();
+        std::fill(applied[1],applied[1]+kBands,0.f);
+        activeCount[1]=0;
+      }
       lastMainChannels = nCh;
     }
     for (int c = 0; c < nCh; ++c) if (!main[c]) return;
@@ -279,7 +287,7 @@ public:
       phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
     }
     if (nSc > 0) hadSc = true;
-    if (lastKeyChannels != nSc) {
+    if (lastKeyChannels != nSc && (params.smart>0.f || smartBlend>0.f)) {
       // A newly connected right key channel begins from silence. Left history
       // remains continuous; the existing envelope releases naturally.
       for(auto& f:scHp[1]) f.ic1=f.ic2=0.f;
@@ -541,6 +549,7 @@ private:
     clearClean();
     clearDetail(); detailActive=false;
     std::fill(keyHistory, keyHistory+kBands, 0.f);
+    std::fill(componentHistory,componentHistory+kBands,0.f); componentPrimed=false;
     keyEnergy[0] = keyEnergy[1] = 0.f;
     std::memset(mainAnaS, 0, sizeof mainAnaS);
     std::memset(mainAnaPow, 0, sizeof mainAnaPow);
@@ -748,6 +757,13 @@ private:
       advanced |= f > 0.f;
     }
     advanced = advanced && smartBlend > 0.f;
+    // No per-band history work when component protection is disabled.
+    const bool componentActive=params.refinedPerception&&smartBlend>0.f&&focusBlend[7]>0.f;
+    if(!componentActive) componentPrimed=false;
+    if(componentActive&&!componentPrimed) {
+      for(int i=0;i<nb;++i) componentHistory[i]=mainAnaPow[0][i]+(nCh>1?mainRight[i]:mainAnaPow[0][i]);
+      componentPrimed=true;
+    }
     float highFraction = 0.f;
     if (advanced && focusBlend[1] > 0.f) {
       float highEnergy = 0.f, midEnergy = 0.f;
@@ -835,15 +851,34 @@ private:
           if (focusBlend[6] > 0.f) {
             // Local auditory excitation neighborhood. Cap the radius to
             // bound work at every sample rate; no FFT or additional delay.
-            float neighbors=0.f;
-            for (int j=earLo[i];j<=earHi[i];++j) {
-              const float wEar=earWeight[i][j-i+8];
-              if(wEar>0.f) neighbors += wEar*2.f*powers[j];
+            if (params.refinedPerception) {
+              float neighborKey=0.f,neighborMain=0.f;
+              for (int j=earLo[i];j<=earHi[i];++j) {
+                const int index=j-i+8;
+                neighborKey += maskOut[i][index]*2.f*powers[j];
+                neighborMain += maskIn[i][index]*(mainAnaPow[0][j]+(nCh>1?mainRight[j]:mainAnaPow[0][j]));
+              }
+              extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::maskingNeed(m,2.f*powers[i],neighborMain/maskInSum[i],neighborKey/maskOutSum[i]));
+            } else {
+              float neighbors=0.f;
+              for (int j=earLo[i];j<=earHi[i];++j) {
+                const float wEar=earWeight[i][j-i+8];
+                if(wEar>0.f) neighbors += wEar*2.f*powers[j];
+              }
+              const float rawKey=2.f*powers[i];
+              extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::auditoryNeed(m,rawKey,neighbors/earSum[i]));
             }
-            const float rawKey=2.f*powers[i];
-            extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::auditoryNeed(m,rawKey,neighbors/earSum[i]));
           }
-          if (focusBlend[7] > 0.f)
+          if (componentActive) {
+            const int lo=std::max(0,i-4),hi=std::min(nb-1,i+4);
+            const float neighbor=.5f*(mainAnaPow[0][lo]+(nCh>1?mainRight[lo]:mainAnaPow[0][lo])+mainAnaPow[0][hi]+(nCh>1?mainRight[hi]:mainAnaPow[0][hi]));
+            const float localRise=MixIntelligence::rising(m,componentHistory[i]);
+            componentHistory[i]+=componentCoef*(m-componentHistory[i]);
+            if(componentHistory[i]<1e-20f) componentHistory[i]=0.f;
+            const float prominence=MixIntelligence::ramp((m/std::max(neighbor,1e-18f)-1.2f)/3.8f);
+            const float localHit=onset*localRise*occupancy;
+            extra *= SpectralIntelligence::blend(focusBlend[7],MixIntelligence::componentNeed(fc[i],localHit,prominence,conflict));
+          } else if (focusBlend[7]>0.f)
             extra *= SpectralIntelligence::blend(focusBlend[7],MixIntelligence::component(fc[i],onset,conflict));
           if (focusBlend[8] > 0.f) {
             const float current=2.f*powers[i];
@@ -1089,7 +1124,10 @@ private:
   bool msApplied = false, bandDirty = true, anyActive = false, hadSc = false;
   float fc[kBands] = {}, bandWeight[kBands] = {}, bellG[kBands] = {};
   float lowProtect[kBands]={},perceptualWeight[kBands]={},vocalHigh[kBands]={};
+  float componentHistory[kBands]={},componentCoef=0.f;
+  bool componentPrimed=false;
   float earWeight[kBands][17] = {}, earSum[kBands] = {};
+  float maskIn[kBands][17]={}, maskOut[kBands][17]={}, maskInSum[kBands]={},maskOutSum[kBands]={};
   int earLo[kBands] = {}, earHi[kBands] = {};
   float kernC[kBands][2 * kReach + 1] = {}, kernM[kBands][2 * kReach + 1] = {}, solved[kBands] = {}, lsStep = 0.f;
   float density[kBands] = {}, bellQ[kBands] = {}, anaK[kBands] = {}, anaA1[kBands] = {}, anaA2[kBands] = {}, anaA3[kBands] = {}, anaPowCoef[kBands] = {};

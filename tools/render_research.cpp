@@ -20,12 +20,13 @@ static std::vector<float> read(const char* path) {
 }
 int main(int argc,char** argv){
  try {
-  if(argc!=10)throw std::runtime_error("usage: render_research main.f32 key.f32 out.f32 rate amount smart cleanKey phaseProtect stereoDetail");
+  if(argc!=10&&argc!=13)throw std::runtime_error("usage: render_research main.f32 key.f32 out.f32 rate amount smart cleanKey phaseProtect stereoDetail [humanEar componentProtect refinedModel]");
   auto m=read(argv[1]),k=read(argv[2]);
   if(m.size()!=k.size())throw std::runtime_error("unequal source lengths");
   const double fs=std::stod(argv[4]);if(fs<44100.||fs>192000.)throw std::runtime_error("unsupported research rate");
   skell::SpacerParams p; p.amount=std::stof(argv[5]);p.smart=std::stof(argv[6]);p.cleanKey=std::stof(argv[7]);p.phaseProtect=std::stof(argv[8]);p.stereoDetail=std::stof(argv[9]);
-  for(float v:{p.amount,p.smart,p.cleanKey,p.phaseProtect,p.stereoDetail})if(!std::isfinite(v)||v<0.f||v>1.f)throw std::runtime_error("invalid setting");
+  if(argc==13){p.humanEar=std::stof(argv[10]);p.componentProtect=std::stof(argv[11]);const std::string model=argv[12];if(model!="0"&&model!="1")throw std::runtime_error("invalid model");p.refinedPerception=model=="1";}
+  for(float v:{p.amount,p.smart,p.cleanKey,p.phaseProtect,p.stereoDetail,p.humanEar,p.componentProtect})if(!std::isfinite(v)||v<0.f||v>1.f)throw std::runtime_error("invalid setting");
   p.attackMs=10.f;p.releaseMs=100.f;p.smooth=.3f;
   skell::ZeroLatencyEngine e;e.prepare(fs);e.setParams(p);
   constexpr int block=128;

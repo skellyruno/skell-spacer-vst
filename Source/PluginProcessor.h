@@ -53,6 +53,7 @@ private:
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};
+  std::atomic<bool> refinedPerception{true}; // fresh instances use model 2
   int sidechainHold = 0;
   static constexpr int kChunk = 1024;
   float scMon[2][kChunk] = {};   // the sidechain as the detector hears it (after its filters), for Listen

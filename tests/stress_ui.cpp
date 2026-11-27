@@ -24,6 +24,24 @@ int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI init;
   SkellAudioProcessor proc; proc.enableAllBuses(); proc.setRateAndBufferSizeDetails(48000.0, 256); proc.prepareToPlay(48000.0, 256);
 
+  // Model selection is internal state, not a new automation parameter.
+  {
+    juce::MemoryBlock fresh; proc.getStateInformation(fresh);
+    auto xml=juce::AudioProcessor::getXmlFromBinary(fresh.getData(),(int)fresh.getSize());
+    check(xml && xml->getIntAttribute("perceptionModelVersion")==2,"fresh instance uses refined perception");
+    if (!xml) return 1;
+    xml->removeAttribute("perceptionModelVersion");
+    juce::MemoryBlock old; juce::AudioProcessor::copyXmlToBinary(*xml,old);
+    proc.setStateInformation(old.getData(),(int)old.getSize());
+    juce::MemoryBlock restored; proc.getStateInformation(restored);
+    auto saved=juce::AudioProcessor::getXmlFromBinary(restored.getData(),(int)restored.getSize());
+    check(saved && saved->getIntAttribute("perceptionModelVersion")==1,"old project retains original perception model");
+    proc.setStateInformation(fresh.getData(),(int)fresh.getSize());
+    proc.getStateInformation(restored);
+    saved=juce::AudioProcessor::getXmlFromBinary(restored.getData(),(int)restored.getSize());
+    check(saved && saved->getIntAttribute("perceptionModelVersion")==2,"refined perception state round trips");
+  }
+
   // Exercise exact APVTS save/restore, including old states in the same instance.
   {
     auto* sensitivity = proc.parameters.getParameter("levelSensitivity");

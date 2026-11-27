@@ -194,6 +194,7 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.sonicTerritory = pTerritory->load() * 0.01f;
   p.humanEar = pEar->load() * 0.01f;
   p.componentProtect = pComponent->load() * 0.01f;
+  p.refinedPerception = refinedPerception.load(std::memory_order_relaxed);
   p.foresight = pForesight->load() * 0.01f;
   p.cleanKey=pCleanKey->load(std::memory_order_relaxed)*.01f;
   p.phaseProtect=pPhaseProtect->load(std::memory_order_relaxed)*.01f;
@@ -265,6 +266,7 @@ juce::AudioProcessorEditor* SkellAudioProcessor::createEditor() { return new Ske
 void SkellAudioProcessor::getStateInformation(juce::MemoryBlock& dest) {
   auto state = parameters.copyState();
   state.setProperty("theme", themeIndex.load(), nullptr);
+  state.setProperty("perceptionModelVersion", refinedPerception.load() ? 2 : 1, nullptr);
   if (auto xml = state.createXml()) copyXmlToBinary(*xml, dest);
 }
 void SkellAudioProcessor::setStateInformation(const void* data, int size) {
@@ -272,6 +274,7 @@ void SkellAudioProcessor::setStateInformation(const void* data, int size) {
     if (xml->hasTagName(parameters.state.getType())) {
       themeIndex.store(juce::jlimit(0, 3, xml->getIntAttribute("theme", 0)));
       auto state = juce::ValueTree::fromXml(*xml);
+      refinedPerception.store(xml->getIntAttribute("perceptionModelVersion", 1) == 2);
       // An old project must restore legacy sound even after a sensitive preset
       // was loaded in this same instance. APVTS's absent value is not enough.
       if (!state.getChildWithProperty("id", "levelSensitivity").isValid()) {

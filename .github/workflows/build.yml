@@ -93,6 +93,14 @@ jobs:
           g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I . tests/smart_efficiency_test.cpp -o smart_efficiency_test
           set -o pipefail
           ./smart_efficiency_test | tee quality-artifacts/smart-efficiency.txt
+      - name: Refined perception, local component protection and disabled-model parity
+        run: |
+          mkdir -p quality-artifacts
+          set -o pipefail
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/perceptual_component_test.cpp -o perceptual_component_test
+          ./perceptual_component_test | tee quality-artifacts/perceptual-component.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/perceptual_component_test.cpp -o perceptual_component_san
+          ./perceptual_component_san
       - name: Baseline parity and four-instance DSP benchmark
         run: |
           mkdir -p baseline quality-artifacts

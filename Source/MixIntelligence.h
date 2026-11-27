@@ -40,6 +40,27 @@ struct MixIntelligence {
     const float protect=std::max(.65f*bass,.8f*hit);
     return 1.f-protect*(1.f-.65f*unit(conflict));
   }
+  // Bounded relative excitation proxy: a lower masker can influence a
+  // higher neighboring target more than the converse. Geometry only, no
+  // calibrated SPL, absolute threshold of hearing or trained model.
+  static float maskingWeight(float masker,float target) {
+    const float width=erb(masker)*(target>=masker?2.5f:1.5f);
+    return 1.f-ramp(std::fabs(target-masker)/width);
+  }
+  static float maskingNeed(float main,float key,float neighborMain,float neighborKey) {
+    const float masker=main+.65f*neighborMain;
+    const float target=key+.35f*neighborKey;
+    const float ratio=masker/std::max(masker+target,1e-18f);
+    return .30f+.70f*ramp(ratio/.65f);
+  }
+  // Local band evidence, not isolated stems. A distant drum onset must not
+  // protect unrelated sustained bands; strong conflict limits protection.
+  static float componentNeed(float hz,float localHit,float prominence,float conflict) {
+    const float bass=(1.f-ramp((hz-60.f)/200.f))*(.20f+.80f*unit(prominence));
+    const float hit=ramp((hz-80.f)/500.f)*unit(localHit);
+    const float protection=std::max(.65f*bass,.8f*hit);
+    return 1.f-protection*(1.f-.80f*unit(conflict));
+  }
   // Causal onset trend, only accelerates existing attack; no future samples
   // and no nonzero request in the absence of a detected key.
   static float rising(float current,float history) {

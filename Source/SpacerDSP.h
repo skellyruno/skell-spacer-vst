@@ -31,6 +31,7 @@ struct SpacerParams {
   float tempoRecovery=0.f, hostBpm=0.f;
   ProtectionCurve::Nodes protect{};
   bool deltaListen = false;
+  bool refinedPerception = false; // preserve the original DSP library contract
   float levelSensitivity = 0.f; // 0..1: legacy relative spectrum -> absolute-level-sensitive depth
 };
 
