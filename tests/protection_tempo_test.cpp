@@ -12,14 +12,14 @@ int main(){
   for(double fs:{44100.,48000.,96000.,192000.}){
     skell::ZeroLatencyEngine base,protectedE,tempo,noTempo,classicA,classicB,normal;
     for(auto* e:{&base,&protectedE,&tempo,&noTempo,&classicA,&classicB,&normal})e->prepare(fs);
-    skell::SpacerParams p;p.smart=1.f;p.amount=.65f;p.releaseMs=250.f;p.attackMs=5.f;
+    skell::SpacerParams p;p.smart=1.f;p.amount=.65f;p.releaseMs=160.f;p.attackMs=5.f;
     base.setParams(p);normal.setParams(p);
     p.protect.fill(1.f);protectedE.setParams(p);
     p.protect.fill(0.f);p.tempoRecovery=1.f;p.hostBpm=240.f;tempo.setParams(p);
     p.hostBpm=0.f;noTempo.setParams(p);
     p.smart=0.f;p.protect.fill(1.f);classicA.setParams(p);
     p.protect.fill(0.f);p.tempoRecovery=0.f;classicB.setParams(p);
-    double a=0.,b=0.,dry=0.;float diff=0.f,classicDiff=0.f;
+    double a=0.,b=0.,dry=0.,releaseBase=0.,releaseTempo=0.;float diff=0.f,classicDiff=0.f;
     for(int pos=0;pos<static_cast<int>(fs*1.2);pos+=128){
       float x[128],y[128],z[128],t[128],q[128],r[128],s[128],k[128];
       for(int i=0;i<128;++i){
@@ -28,17 +28,21 @@ int main(){
       }
       float* A[]={x},*B[]={y},*C[]={z},*D[]={t},*E[]={q},*F[]={r},*G[]={s};
       const float* K[]={k};
-      base.process(A,K,1,1,128);protectedE.process(B,K,1,1,128);tempo.process(C,K,1,1,128);
-      noTempo.process(D,K,1,1,128);classicA.process(E,K,1,1,128);classicB.process(F,K,1,1,128);normal.process(G,K,1,1,128);
+      const int keyChannels=pos<static_cast<int>(fs*.65)?1:0;
+      base.process(A,K,1,keyChannels,128);protectedE.process(B,K,1,keyChannels,128);tempo.process(C,K,1,keyChannels,128);
+      noTempo.process(D,K,1,keyChannels,128);classicA.process(E,K,1,keyChannels,128);classicB.process(F,K,1,keyChannels,128);normal.process(G,K,1,keyChannels,128);
       for(int i=0;i<128;++i){
         check(std::isfinite(y[i])&&std::isfinite(z[i]),"finite output");
         diff=std::max(diff,std::abs(t[i]-s[i]));classicDiff=std::max(classicDiff,std::abs(q[i]-r[i]));
-        if(pos>static_cast<int>(fs*.8)){a+=x[i]*x[i];b+=y[i]*y[i];dry+=k[i]*k[i];}
+        if(pos>static_cast<int>(fs*.45)&&pos<static_cast<int>(fs*.6)){a+=x[i]*x[i];b+=y[i]*y[i];dry+=k[i]*k[i];}
+        if(pos>static_cast<int>(fs*.70)&&pos<static_cast<int>(fs*.85)){releaseBase+=x[i]*x[i];releaseTempo+=z[i]*z[i];}
       }
     }
     check(diff==0.f&&classicDiff==0.f,"fallback and Classic bit parity");
     check(b>dry*.98&&a<dry*.8,"full brush retains protected tone");
+    check(releaseTempo>releaseBase*1.05,"tempo recovery measurably faster after key stops");
     check(protectedE.latencySamples()==0,"zero latency");
+    std::printf("tempo recovery power ratio %.6f\n",releaseTempo/releaseBase);
     std::printf("%.0f Hz full protection %.4f%% retained vs %.4f%% normal, fallback %.9g, Classic %.9g\n",fs,100.*b/dry,100.*a/dry,static_cast<double>(diff),static_cast<double>(classicDiff));
   }
 }

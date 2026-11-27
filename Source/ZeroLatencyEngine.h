@@ -717,8 +717,6 @@ private:
           // Always track while Smart is active to avoid a cold history on automation.
           keyHistory[i] += trendCoef*(2.f*anaPow[i]-keyHistory[i]);
           if (keyHistory[i]<1e-20f) keyHistory[i]=0.f;
-          if (brushActive)
-            extra *= 1.f-ProtectionCurve::at(brushBlend,(static_cast<float>(i)+.5f)/static_cast<float>(kBandsPerOct));
           const float factor = occupancy * keep * extra;
           t *= 1.f + smartBlend * (factor - 1.f);
           // More rapid recovery when the key fades or an instrumental onset
@@ -729,7 +727,9 @@ private:
           rc += (rc*rc*rc - rc) * std::max(recovery, smartBlend * punch);
           ac += (1.f - ac) * timing * low * 0.35f;
           diagOverlap[i].store(conflict, std::memory_order_relaxed);
-          diagProtection[i].store(smartBlend * (1.f - keep*extra), std::memory_order_relaxed);
+          const float automaticProtection=smartBlend*(1.f-keep*extra);
+          const float manualProtection=brushActive?smartBlend*ProtectionCurve::at(brushBlend,(static_cast<float>(i)+.5f)/static_cast<float>(kBandsPerOct)):0.f;
+          diagProtection[i].store(manualProtection>0.f?1.f-(1.f-automaticProtection)*(1.f-manualProtection):automaticProtection,std::memory_order_relaxed);
         }
         if (!params.freeze) {
           float& e = env[i];
@@ -754,6 +754,10 @@ private:
     bool needsSolve = false;
     for (int i = 0; i < nb; ++i) {
       req[i] = params.amount * kMaxCutDb * env[i] * bandWeight[i];
+      // Manual protection is independent of the dynamic release envelope.
+      // The brush's own 50ms ramp protects painted bands even with a long release.
+      if(brushActive&&smartBlend>0.f)
+        req[i]*=1.f-smartBlend*ProtectionCurve::at(brushBlend,(static_cast<float>(i)+.5f)/static_cast<float>(kBandsPerOct));
       // A nonzero warm start must decay through the original solver.
       needsSolve |= req[i] != 0.f || solved[i] != 0.f;
     }

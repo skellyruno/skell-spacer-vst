@@ -225,7 +225,7 @@ void SpectrumView::setBrushMode(bool enabled) {
 void SpectrumView::brushAt(juce::Point<float> point,bool erase) {
   const float s=getWidth()/494.f;
   auto a=getLocalBounds().toFloat().reduced(8.f*s,10.f*s);
-  a.removeFromBottom(17.f*s);
+  a.removeFromBottom(33.f*s); // reserve diagnostic lanes and legend
   if(a.getWidth()<=0.f||a.getHeight()<=0.f)return;
   const float normalized=juce::jlimit(0.f,1.f,(point.x-a.getX())/a.getWidth());
   const float octave=normalized*std::log2(1000.f);
@@ -265,6 +265,8 @@ void SpectrumView::paintBrush(juce::Graphics& g,juce::Rectangle<float> a,float s
     nonzero|=nodes[i]>0.f;
   }
   if(!brushMode&&!nonzero)return;
+  a.removeFromBottom(16.f*s); // do not draw over the spectrum legend
+  const auto brushInk=kBg.getBrightness()>.5f?juce::Colour(0xff7551a5):juce::Colour(0xffbc9af7);
   juce::Path line,fill;
   const float oct=std::log2(1000.f);
   fill.startNewSubPath(a.getX(),a.getBottom());
@@ -275,8 +277,8 @@ void SpectrumView::paintBrush(juce::Graphics& g,juce::Rectangle<float> a,float s
     fill.lineTo(a.getX()+x*a.getWidth(),y);
   }
   fill.lineTo(a.getRight(),a.getBottom());fill.closeSubPath();
-  g.setColour(kAccent.withAlpha(.12f));g.fillPath(fill);
-  g.setColour(kAccent.withAlpha(brushMode?.95f:.55f));g.strokePath(line,juce::PathStrokeType(1.4f*s));
+  g.setColour(brushInk.withAlpha(.15f));g.fillPath(fill);
+  g.setColour(brushInk.withAlpha(brushMode?.98f:.70f));g.strokePath(line,juce::PathStrokeType(1.6f*s));
   if(brushMode) {
     for(int i=0;i<skell::ProtectionCurve::count;++i) {
       const float x=static_cast<float>(i)*.5f/oct;
@@ -286,7 +288,7 @@ void SpectrumView::paintBrush(juce::Graphics& g,juce::Rectangle<float> a,float s
     }
     const auto tip=juce::Rectangle<float>(a.getX()+4.f*s,a.getY()+15.f*s,230.f*s,13.f*s);
     g.setColour(kBg.withAlpha(.92f));g.fillRect(tip);
-    drawText(g,"DRAW PROTECT  /  RIGHT-DRAG ERASE",tip,9.f*s,true,kAccent,juce::Justification::centredLeft,.04f);
+    drawText(g,"DRAW PROTECT  /  RIGHT-DRAG ERASE",tip,9.f*s,true,brushInk,juce::Justification::centredLeft,.04f);
   }
 }
 void SpectrumView::paint(juce::Graphics& g) {
@@ -722,7 +724,8 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
     const auto& d=spectrum.smartData();
     const bool active=proc.parameters.getRawParameterValue("smartSpace")->load()>0.f;
     const float bpm=proc.getHostBpm();
-    const auto heading=active?(bpm>0.f?"SMART / "+juce::String(bpm,1)+" BPM":juce::String("SMART SPACE")):juce::String("SMART SPACE OFF");
+    const bool tempoRequested=proc.parameters.getRawParameterValue("tempoRecovery")->load()>0.f;
+    const auto heading=active?(bpm>0.f?"SMART / "+juce::String(bpm,1)+" BPM":tempoRequested?juce::String("NO HOST TEMPO"):juce::String("SMART SPACE")):juce::String("SMART SPACE OFF");
     drawText(g,heading,{28.f,262.f,190.f,14.f},10.f,true,kBoneDim,juce::Justification::centredLeft,.1f);
     const bool keyMonitor=proc.parameters.getRawParameterValue("listen")->load()>.5f;
     const bool deltaMonitor=proc.parameters.getRawParameterValue("deltaListen")->load()>.5f;

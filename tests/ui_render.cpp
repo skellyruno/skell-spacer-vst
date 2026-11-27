@@ -105,7 +105,7 @@ int main(int argc, char** argv) {
       auto src=juce::Desktop::getInstance().getMainMouseSource();
       const auto point=juce::Point<float>(graph->getWidth()*.55f,graph->getHeight()*.28f);
       juce::MouseEvent down(src,point,juce::ModifierKeys::leftButtonModifier,0.f,0.f,0.f,0.f,0.f,graph,graph,juce::Time::getCurrentTime(),point,juce::Time::getCurrentTime(),1,false);
-      graph->mouseDown(down); graph->mouseDrag(down.withNewPosition({point.x+graph->getWidth()*.18f,point.y})); graph->mouseUp(down);
+      graph->mouseDown(down); graph->mouseDrag(down.withNewPosition(juce::Point<float>{point.x+graph->getWidth()*.18f,point.y})); graph->mouseUp(down);
       float peak=0.f;int changed=0;
       for(const auto* id:SkellAudioProcessor::protectionIds){const float v=p.parameters.getRawParameterValue(id)->load();peak=std::max(peak,v);changed+=v>0.f?1:0;}
       check(peak>40.f&&changed>=3,"Brush writes interpolated host nodes");
@@ -117,7 +117,14 @@ int main(int argc, char** argv) {
       select->setSelectedId(15,juce::sendNotificationSync);pump();
       value->setValue(70.,juce::sendNotificationSync);
       check(p.parameters.getRawParameterValue("tempoRecovery")->load()>69.f,"Tempo control binding");
-      feed(p,20);capture("06_tempo_recovery.png");
+      feed(p,20);check(p.getHostBpm()==0.f,"Tempo fallback without playhead");
+      struct TempoPlayhead final:juce::AudioPlayHead {
+        juce::Optional<PositionInfo> getPosition() const override {PositionInfo info;info.setBpm(120.);return info;}
+      } playhead;
+      p.setPlayHead(&playhead);feed(p,20);
+      check(p.getHostBpm()==120.f,"Host BPM delivered to engine");
+      capture("06_tempo_recovery.png");p.setPlayHead(nullptr);feed(p,20);
+      check(p.getHostBpm()==0.f,"Tempo cleared on playhead loss");
       select->setSelectedId(12,juce::sendNotificationSync); pump();
       ed->setSize(396,324); capture("07_smart_minimum.png");
       ed->setSize(990,810); capture("08_smart_maximum.png");

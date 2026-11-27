@@ -92,6 +92,8 @@ jobs:
           ./smart_space_san
       - name: Verify compatibility parameter IDs
         run: python3 tests/parameter_contract_test.py
+      - name: Strict preview package regression
+        run: python3 tests/preview_package_test.py
       - name: Strict VST3 moduleinfo normalizer regression
         run: python3 tests/moduleinfo_normalizer_test.py
       - name: DSP tests (zero-latency engine)
@@ -159,6 +161,8 @@ jobs:
           $plugin = 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3'
           $binary = "$plugin/Contents/x86_64-win/Skell Spacer.vst3"
           $moduleInfo = "$plugin/Contents/Resources/moduleinfo.json"
+          $releaseBundles = @(Get-ChildItem -Path 'build/SkellSpacer_artefacts/Release' -Recurse -Directory -Filter '*.vst3')
+          if ($releaseBundles.Count -ne 1 -or $releaseBundles[0].FullName -ne (Resolve-Path $plugin).Path) { throw 'Missing or duplicate Release VST3 bundles' }
           if (-not (Test-Path $binary)) { throw 'VST3 Windows x64 binary missing' }
           if (-not (Test-Path $moduleInfo)) { throw 'VST3 moduleinfo.json missing' }
 
@@ -427,6 +431,9 @@ jobs:
             "$((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
           }
           [IO.File]::WriteAllLines((Join-Path $distRoot 'SHA256SUMS.txt'), $hashLines, [Text.UTF8Encoding]::new($false))
+
+      - name: Verify exact preview package inventory and checksums
+        run: python tools/verify_preview_package.py dist
 
       - uses: actions/upload-artifact@v4
         with:
