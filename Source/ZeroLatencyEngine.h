@@ -412,8 +412,12 @@ private:
   }
   void updateSpread() {
     const float h = params.smooth * 0.5f * (float)kBandsPerOct;
-    for (int j = -kSpan; j <= kSpan; ++j)
-      spreadWeight[j + kSpan] = clamp01(h - (float)std::abs(j) + 1.f);
+    spreadRadius = 0;
+    for (int j = -kSpan; j <= kSpan; ++j) {
+      const float w = clamp01(h - (float)std::abs(j) + 1.f);
+      spreadWeight[j + kSpan] = w;
+      if (w > 0.f) spreadRadius = std::max(spreadRadius, std::abs(j));
+    }
   }
 
   // every `step` samples: levels -> depth -> envelope -> pan -> bell coefficients
@@ -426,7 +430,8 @@ private:
       float ps[kBands], curPeak = 0.f;
       for (int i = 0; i < nb; ++i) {
         float sum = 0.f, wsum = 0.f;
-        for (int j = -kSpan; j <= kSpan; ++j) {
+        // Skip zero weights, retaining nonzero summation order.
+        for (int j = -spreadRadius; j <= spreadRadius; ++j) {
           const int q = i + j;
           if (q < 0 || q >= nb) continue;
           const float w = spreadWeight[j + kSpan];
@@ -479,10 +484,15 @@ private:
     // padded by kReach zeros each side so the kernel loops have fixed trip counts and no bounds tests
     float req[kBands + 1] = {}, pad[kBands + 2 * kReach] = {};
     float* const cut0 = pad + kReach;
-    for (int i = 0; i < nb; ++i) req[i] = params.amount * kMaxCutDb * env[i] * bandWeight[i];
+    bool needsSolve = false;
+    for (int i = 0; i < nb; ++i) {
+      req[i] = params.amount * kMaxCutDb * env[i] * bandWeight[i];
+      // A nonzero warm start must decay through the original solver.
+      needsSolve |= req[i] != 0.f || solved[i] != 0.f;
+    }
     req[nb] = req[nb - 1];                          // the last band has no mid-point above it: mid-point target = its own
     std::copy(solved, solved + nb, cut0);           // warm start: the previous control step's solution
-    for (int it = 0; it < 2; ++it) {
+    for (int it = 0; needsSolve && it < 2; ++it) {
       float accPad[kBands + 2 * kReach] = {};
       float* const acc = accPad + kReach;
       for (int i = 0; i < nb; ++i) {
@@ -505,12 +515,19 @@ private:
         const float cut = cut0[i] * w[c];
         applied[c][i] = cut < 0.003f ? 0.f : cut;
         if (cut < 0.003f) { if (b.on) { b.on = false; b.ic1 = b.ic2 = 0.f; } continue; }
-        const float A = fastExp2(-cut * 0.08304820f);          // 10^(-cut/40)
-        const float k = 1.f / (bellQ[i] * A), g = bellG[i];
-        b.a1 = 1.f / (1.f + g * (g + k));
-        b.a2 = g * b.a1; b.a3 = g * b.a2;
-        b.m1 = k * (A * A - 1.f);
-        b.gx = 1.f + b.m1 * b.a2;
+        if (c == 1 && w[0] == w[1]) {
+          // Copy identical coefficients, never the independent filter state.
+          const Bell& left = bell[0][i];
+          b.a1 = left.a1; b.a2 = left.a2; b.a3 = left.a3;
+          b.m1 = left.m1; b.gx = left.gx;
+        } else {
+          const float A = fastExp2(-cut * 0.08304820f);          // 10^(-cut/40)
+          const float k = 1.f / (bellQ[i] * A), g = bellG[i];
+          b.a1 = 1.f / (1.f + g * (g + k));
+          b.a2 = g * b.a1; b.a3 = g * b.a2;
+          b.m1 = k * (A * A - 1.f);
+          b.gx = 1.f + b.m1 * b.a2;
+        }
         b.on = true; anyActive = true;
         activeIndex[c][activeCount[c]++] = i;
       }
@@ -598,6 +615,7 @@ private:
   int activeIndex[kMaxCh][kBands] = {}, activeCount[kMaxCh] = {};
   float attackCoef = 0.f, releaseCoef = 0.f, peakDecayCoef = 0.f;
   float spreadWeight[2 * kSpan + 1] = {};
+  int spreadRadius = 0;
   Svf scHp[kMaxCh][2], scLp[kMaxCh][2];
   bool scHpOn = false, scLpOn = false;
 
