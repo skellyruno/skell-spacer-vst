@@ -48,6 +48,10 @@ SkellAudioProcessor::SkellAudioProcessor()
   pPerceptual = parameters.getRawParameterValue("perceptualFocus");
   pHarmonic = parameters.getRawParameterValue("harmonicProtect");
   pDepth = parameters.getRawParameterValue("depthBudget");
+  pTerritory = parameters.getRawParameterValue("sonicTerritory");
+  pEar = parameters.getRawParameterValue("humanEar");
+  pComponent = parameters.getRawParameterValue("componentProtect");
+  pForesight = parameters.getRawParameterValue("foresight");
   setLatencySamples(0);
 }
 
@@ -116,6 +120,10 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"perceptualFocus", 4}, "Perceptual Focus", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"harmonicProtect", 4}, "Harmonic Protect", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"depthBudget", 4}, "Adaptive Depth", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"sonicTerritory", 5}, "Sonic Territory", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"humanEar", 5}, "Human Ear", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"componentProtect", 5}, "Component Protect", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"foresight", 5}, "Musical Foresight", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   return layout;
 }
 
@@ -169,6 +177,10 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.perceptualFocus = pPerceptual->load() * 0.01f;
   p.harmonicProtect = pHarmonic->load() * 0.01f;
   p.depthBudget = pDepth->load() * 0.01f;
+  p.sonicTerritory = pTerritory->load() * 0.01f;
+  p.humanEar = pEar->load() * 0.01f;
+  p.componentProtect = pComponent->load() * 0.01f;
+  p.foresight = pForesight->load() * 0.01f;
   const bool listenRequested = pListen->load() > 0.5f;
   p.deltaListen = pDelta->load() > 0.5f && !listenRequested;
   engine.setParams(p);
@@ -244,7 +256,7 @@ void SkellAudioProcessor::setStateInformation(const void* data, int size) {
         legacyDefault.setProperty("value", 0.0f, nullptr);
         state.appendChild(legacyDefault, nullptr);
       }
-      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget"}) {
+      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight"}) {
         if (!state.getChildWithProperty("id", id).isValid()) {
           juce::ValueTree legacyDefault("PARAM");
           legacyDefault.setProperty("id", id, nullptr);

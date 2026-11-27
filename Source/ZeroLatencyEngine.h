@@ -11,6 +11,7 @@
 #include "LevelSensitivity.h"
 #include "DetectorResponse.h"
 #include "SpectralIntelligence.h"
+#include "MixIntelligence.h"
 
 namespace skell {
 
@@ -70,6 +71,7 @@ public:
     step = fs <= 50000.0 ? 16 : (fs <= 100000.0 ? 32 : 64);
     stepSec = (float)(step / fs);
     smartStep = std::min(1.f, stepSec / 0.050f);
+    trendCoef = (float)(1.0-std::exp(-stepSec/.080f));
     onsetFastCoef = (float)(1.0 - std::exp(-1.0 / (0.003 * fs)));
     onsetSlowCoef = (float)(1.0 - std::exp(-1.0 / (0.060 * fs)));
     meterCoef = (float)(1.0 - std::exp(-1.0 / (0.250 * fs)));
@@ -138,7 +140,7 @@ public:
     sensitivity.reset();
     clearSmart();
     smartBlend = deltaMix = 0.f;
-    std::fill(focusBlend, focusBlend + 5, 0.f);
+    std::fill(focusBlend, focusBlend + 9, 0.f);
     diagConflictBefore.store(0.f); diagConflictAfter.store(0.f);
     diagInput.store(0.f); diagOutput.store(0.f);
     diagOnsetIn.store(0.f); diagOnsetOut.store(0.f);
@@ -181,6 +183,10 @@ public:
     p.perceptualFocus = fin(p.perceptualFocus, 0.f, 1.f, 0.f);
     p.harmonicProtect = fin(p.harmonicProtect, 0.f, 1.f, 0.f);
     p.depthBudget = fin(p.depthBudget, 0.f, 1.f, 0.f);
+    p.sonicTerritory = fin(p.sonicTerritory, 0.f, 1.f, 0.f);
+    p.humanEar = fin(p.humanEar, 0.f, 1.f, 0.f);
+    p.componentProtect = fin(p.componentProtect, 0.f, 1.f, 0.f);
+    p.foresight = fin(p.foresight, 0.f, 1.f, 0.f);
     p.pan = fin(p.pan, -1.f, 1.f, 0.f);
     p.attackMs = fin(p.attackMs, 1.f, 200.f, 10.f);
     p.releaseMs = fin(p.releaseMs, 5.f, 2000.f, 150.f);
@@ -232,6 +238,10 @@ public:
       phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
     }
     if (nSc > 0) hadSc = true;
+    if (lastKeyChannels != nSc) {
+      keyEnergy[0] = keyEnergy[1] = 0.f;
+      lastKeyChannels = nSc;
+    }
 
     for (int i = 0; i < nSamples; ++i) {
       if (mix < target) mix = std::min(target, mix + mixStep);
@@ -244,6 +254,13 @@ public:
         if (nSc >= 2) s1 = scFilter(1, DetectorResponse::safeKey(sc[1][i]));
         d = s0;
         if (nSc >= 2) {
+          if ((params.smart > 0.f || smartBlend > 0.f) &&
+              (params.sonicTerritory > 0.f || focusBlend[5] > 0.f)) {
+            keyEnergy[0] += phaseEnergyCoef*(s0*s0-keyEnergy[0]);
+            keyEnergy[1] += phaseEnergyCoef*(s1*s1-keyEnergy[1]);
+            if (keyEnergy[0]<1e-20f) keyEnergy[0]=0.f;
+            if (keyEnergy[1]<1e-20f) keyEnergy[1]=0.f;
+          }
           // The usual mono key is the mid channel. When stereo key channels
           // nearly cancel, blend toward the side component over 50 ms.
           // This avoids sample-by-sample polarity switches and adds no delay.
@@ -431,6 +448,8 @@ private:
     std::memset(anaPow, 0, sizeof anaPow);
   }
   void clearSmart() {
+    std::fill(keyHistory, keyHistory+kBands, 0.f);
+    keyEnergy[0] = keyEnergy[1] = 0.f;
     std::memset(mainAnaS, 0, sizeof mainAnaS);
     std::memset(mainAnaPow, 0, sizeof mainAnaPow);
     onsetFast = onsetSlow = meterIn = meterOut = meterOnsetIn = meterOnsetOut = 0.f;
@@ -566,9 +585,9 @@ private:
       }
     }
     const float onset = smartBlend > 0.f ? onsetStrength() : 0.f;
-    const float focusTarget[5] = {params.spectralFocus, params.vocalFocus, params.perceptualFocus, params.harmonicProtect, params.depthBudget};
+    const float focusTarget[9] = {params.spectralFocus, params.vocalFocus, params.perceptualFocus, params.harmonicProtect, params.depthBudget, params.sonicTerritory, params.humanEar, params.componentProtect, params.foresight};
     bool advanced = false;
-    for (int j = 0; j < 5; ++j) {
+    for (int j = 0; j < 9; ++j) {
       float& f = focusBlend[j];
       f = focusTarget[j] > f ? std::min(focusTarget[j], f + smartStep)
                              : std::max(focusTarget[j], f - smartStep);
@@ -647,6 +666,28 @@ private:
             if (focusBlend[3] > 0.f) extra *= SI::blend(focusBlend[3], SI::harmonic(m, neighborPower, conflict));
             if (focusBlend[4] > 0.f) extra *= SI::blend(focusBlend[4], SI::budget(m, rawKey));
           }
+          if (focusBlend[6] > 0.f) {
+            // Local auditory excitation neighborhood. Cap the radius to
+            // bound work at every sample rate; no FFT or additional delay.
+            float neighbors=0.f, weights=0.f;
+            for (int j=std::max(0,i-8); j<=std::min(nb-1,i+8); ++j) {
+              if (j==i) continue;
+              const float wEar=MixIntelligence::auditoryWeight(fc[i],fc[j]);
+              neighbors += wEar*2.f*anaPow[j]; weights += wEar;
+            }
+            const float rawKey=2.f*anaPow[i];
+            extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::auditoryNeed(m,rawKey,neighbors/std::max(weights,1e-18f)));
+          }
+          if (focusBlend[7] > 0.f)
+            extra *= SpectralIntelligence::blend(focusBlend[7],MixIntelligence::component(fc[i],onset,conflict));
+          if (focusBlend[8] > 0.f) {
+            const float current=2.f*anaPow[i];
+            const float trend=MixIntelligence::rising(current,keyHistory[i]);
+            ac=MixIntelligence::attack(ac,trend,smartBlend*focusBlend[8]);
+          }
+          // Always track while Smart is active to avoid a cold history on automation.
+          keyHistory[i] += trendCoef*(2.f*anaPow[i]-keyHistory[i]);
+          if (keyHistory[i]<1e-20f) keyHistory[i]=0.f;
           const float factor = occupancy * keep * extra;
           t *= 1.f + smartBlend * (factor - 1.f);
           // More rapid recovery when the key fades or an instrumental onset
@@ -706,10 +747,15 @@ private:
         Bell& b = bell[c][i];
         if (std::fabs(b.ic1) < 1.0e-20f) b.ic1 = 0.f;          // flush decaying state before it goes denormal
         if (std::fabs(b.ic2) < 1.0e-20f) b.ic2 = 0.f;
-        const float cut = cut0[i] * w[c];
+        float cut = cut0[i] * w[c];
+        if (nCh==2 && !msApplied && smartBlend>0.f && focusBlend[5]>0.f &&
+            lastKeyChannels==2 && keyEnergy[0]+keyEnergy[1]>1e-10f) {
+          const float local=MixIntelligence::territory(mainAnaPow[0][i],mainAnaPow[1][i],keyEnergy[0],keyEnergy[1],c);
+          cut *= SpectralIntelligence::blend(smartBlend*focusBlend[5],local);
+        }
         applied[c][i] = cut < 0.003f ? 0.f : cut;
         if (cut < 0.003f) { if (b.on) { b.on = false; b.ic1 = b.ic2 = 0.f; } continue; }
-        if (c == 1 && w[0] == w[1]) {
+        if (c == 1 && cut == applied[0][i]) {
           // Copy identical coefficients, never the independent filter state.
           const Bell& left = bell[0][i];
           b.a1 = left.a1; b.a2 = left.a2; b.a3 = left.a3;
@@ -823,7 +869,8 @@ private:
   SpacerParams params;
   LevelSensitivity sensitivity;
   float smartBlend = 0.f, smartStep = 0.f, deltaMix = 0.f;
-  float focusBlend[5] = {};
+  float focusBlend[9] = {}, keyHistory[kBands] = {}, keyEnergy[2] = {}, trendCoef=0.f;
+  int lastKeyChannels=0;
   int lastMainChannels = 0;
   std::atomic<float> diagConflictBefore{0.f}, diagConflictAfter{0.f};
   float onsetFastCoef = 0.f, onsetSlowCoef = 0.f, meterCoef = 0.f;

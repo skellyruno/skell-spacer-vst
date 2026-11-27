@@ -48,7 +48,7 @@ int main(int argc, char** argv) {
   // Every added parameter must survive current state recall and reset to
   // zero when restoring a pre-Smart project into an already modified instance.
   {
-    const char* added[] = {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget"};
+    const char* added[] = {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight"};
     for (const auto* id : added) {
       auto* p = proc.parameters.getParameter(id);
       if (!p) return 1;

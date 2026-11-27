@@ -22,6 +22,7 @@ int main() {
     p.smart = 1.f; p.punchProtect = .6f; p.bassProtect = .6f; p.adaptiveRelease = .8f;
     p.spectralFocus=.6f; p.vocalFocus=.5f; p.perceptualFocus=.4f;
     p.harmonicProtect=.6f; p.depthBudget=.5f;
+    p.humanEar=.4f; p.componentProtect=.4f; p.foresight=.7f;
     smart.setParams(p);
     float err = 0.f;
     double dryE = 0., wetE = 0., smartE = 0.;

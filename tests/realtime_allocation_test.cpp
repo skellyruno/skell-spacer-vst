@@ -45,6 +45,7 @@ int main() {
         p.punchProtect=.8f; p.bassProtect=.7f; p.adaptiveRelease=.6f;
         p.spectralFocus=.8f; p.vocalFocus=.7f; p.perceptualFocus=.6f;
         p.harmonicProtect=.9f; p.depthBudget=.5f;
+        p.sonicTerritory=.7f; p.humanEar=.6f; p.componentProtect=.5f; p.foresight=.8f;
         p.deltaListen=b%3==0;
         p.attackMs=1.f+(float)(b%5);
         p.pan=(float)(b%19)/9.f-1.f;

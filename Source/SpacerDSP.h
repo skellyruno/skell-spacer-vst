@@ -25,6 +25,7 @@ struct SpacerParams {
   bool power = true;
   float smart = 0.f, punchProtect = 0.f, bassProtect = 0.f, adaptiveRelease = 0.f;
   float spectralFocus = 0.f, vocalFocus = 0.f, perceptualFocus = 0.f, harmonicProtect = 0.f, depthBudget = 0.f;
+  float sonicTerritory = 0.f, humanEar = 0.f, componentProtect = 0.f, foresight = 0.f;
   bool deltaListen = false;
   float levelSensitivity = 0.f; // 0..1: legacy relative spectrum -> absolute-level-sensitive depth
 };
