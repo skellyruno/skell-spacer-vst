@@ -27,6 +27,7 @@ public:
   void setStateInformation(const void*, int) override;
 
   void readSpectrum(float* mainDb, float* sideDb, float* cutDb) const;
+  skell::ZeroLatencyEngine::SmartSnapshot readSmartSnapshot() const { return engine.getSmartSnapshot(); }
   bool isSidechainActive() const { return sidechainActive.load(std::memory_order_relaxed); }
   double getCurrentSampleRate() const { return sampleRateHz.load(std::memory_order_relaxed); }
 
@@ -36,16 +37,27 @@ public:
 
   juce::AudioProcessorValueTreeState parameters;
   static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+  static constexpr const char* protectionIds[skell::ProtectionCurve::count]={"protect00", "protect01", "protect02", "protect03", "protect04", "protect05", "protect06", "protect07", "protect08", "protect09", "protect10", "protect11", "protect12", "protect13", "protect14", "protect15", "protect16", "protect17", "protect18", "protect19", "protect20"};
+  float getHostBpm() const { return hostBpm.load(std::memory_order_relaxed); }
 
 private:
   skell::ZeroLatencyEngine engine;      // zero latency: the plugin never reports a delay to the host
-  std::atomic<float> *pAmount{}, *pSmooth{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{}, *pPan{}, *pMs{}, *pListen{}, *pScLow{}, *pScHigh{};
+  std::atomic<float> *pAmount{}, *pSmooth{}, *pAttack{}, *pRelease{}, *pLow{}, *pHigh{}, *pFreeze{}, *pPower{}, *pPan{}, *pMs{}, *pListen{}, *pScLow{}, *pScHigh{}, *pLevelSensitivity{};
+  std::atomic<float> *pSmart{}, *pPunch{}, *pBass{}, *pAdaptive{}, *pDelta{};
+  std::atomic<float> *pSpectral{}, *pVocal{}, *pPerceptual{}, *pHarmonic{}, *pDepth{};
+  std::atomic<float> *pTerritory{}, *pEar{}, *pComponent{}, *pForesight{};
+  std::atomic<float> *pCleanKey{}, *pPhaseProtect{}, *pStereoDetail{};
+  std::atomic<float>* pTempo{};
+  std::array<std::atomic<float>*,skell::ProtectionCurve::count> pProtect{};
+  std::atomic<float> hostBpm{0.f};
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};
+  std::atomic<bool> refinedPerception{true}; // fresh instances use model 2
   int sidechainHold = 0;
   static constexpr int kChunk = 1024;
   float scMon[2][kChunk] = {};   // the sidechain as the detector hears it (after its filters), for Listen
   float listenMix = 0.f;      // audio thread only: 0 = track, 1 = sidechain monitor
+  float lastMonitor = 0.f;    // decaying detector tail for click-free sidechain bus loss
   JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SkellAudioProcessor)
 };

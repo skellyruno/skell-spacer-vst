@@ -5,7 +5,6 @@ on:
     branches: [main]
   pull_request:
 
-# Re-run only superseded PR checks. Main branch and manual release builds are protected.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -15,8 +14,149 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Export exact source for offline Quick4
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        run: |
+          mkdir -p offline-source
+          git rev-parse HEAD > offline-source/revision.txt
+          git archive --format=zip --output=offline-source/spacer-source.zip HEAD
+          cd offline-source
+          sha256sum spacer-source.zip revision.txt > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        with:
+          name: SkellSpacer-Offline-Source
+          path: offline-source/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Key intelligence and linked stereo detail regression
+        run: |
+          mkdir -p unlinked prior_current quality-artifacts
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/key_intelligence_test.cpp -o key_intelligence_test
+          set -o pipefail
+          ./key_intelligence_test | tee quality-artifacts/key-intelligence.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/key_intelligence_test.cpp -o key_intelligence_san
+          ./key_intelligence_san
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve KeyIntelligence; do
+            sed -e 's/namespace skell/namespace unlinked_skell/g' -e 's/detailLinked=true/detailLinked=false/g' Source/$h.h > unlinked/$h.h
+          done
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I . tests/stereo_detail_efficiency.cpp -o stereo_detail_efficiency
+          ./stereo_detail_efficiency | tee quality-artifacts/stereo-detail-efficiency.txt
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve; do
+            git show 03e7d16bd5cdbb13066c455ad9e34fc5d7ee8d9a:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > prior_current/$h.h
+          done
+          mkdir -p immediate-parent/prior_smart
+          cp prior_current/*.h immediate-parent/prior_smart/
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I immediate-parent tests/smart_efficiency_test.cpp -o current_parity
+          ./current_parity | tee quality-artifacts/immediate-parent-parity.txt
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tools/render_research.cpp -o render_research
+          python3 -m py_compile tools/listening_loudness.py tools/mix_research.py tools/score_external_reference.py tests/research_tools_test.py
+      - name: Bus reconnect and reset regression, cached-control parity
+        run: |
+          mkdir -p bus-parent/prior_smart quality-artifacts
+          set -o pipefail
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve KeyIntelligence; do
+            git show 5b19b800de7c1590fcccbf1e48f1f563ac824f48:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > bus-parent/prior_smart/$h.h
+          done
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I bus-parent tests/bus_reset_test.cpp -o bus_reset_test
+          ./bus_reset_test | tee quality-artifacts/bus-reset.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I bus-parent tests/bus_reset_test.cpp -o bus_reset_san
+          ./bus_reset_san
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I bus-parent tests/smart_efficiency_test.cpp -o bus_parent_parity
+          ./bus_parent_parity | tee quality-artifacts/bus-parent-parity.txt
+      - name: Quiet phrase recovery, phase ceiling and main-detector parity
+        run: |
+          mkdir -p latest-parent/prior_smart unlinked_main quality-artifacts
+          set -o pipefail
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve KeyIntelligence; do
+            git show b68c004a1ae0f0c7231c1a7c09304596e4a21804:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > latest-parent/prior_smart/$h.h
+            sed -e 's/namespace skell/namespace unlinked_main_skell/g' -e 's/mainLinked=true/mainLinked=false/g' Source/$h.h > unlinked_main/$h.h
+          done
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I latest-parent tests/quiet_phrase_test.cpp -o quiet_phrase_test
+          ./quiet_phrase_test | tee quality-artifacts/quiet-phrase.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I latest-parent tests/quiet_phrase_test.cpp -o quiet_phrase_san
+          ./quiet_phrase_san
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/phase_recovery_test.cpp -o phase_recovery_test
+          ./phase_recovery_test | tee quality-artifacts/phase-recovery.txt
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I . tests/main_link_efficiency.cpp -o main_link_efficiency
+          ./main_link_efficiency | tee quality-artifacts/main-link-efficiency.txt
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I latest-parent tests/smart_efficiency_test.cpp -o latest_parent_parity
+          ./latest_parent_parity | tee quality-artifacts/latest-parent-parity.txt
+      - name: Smart Engine cached auditory geometry parity and four-instance benchmark
+        run: |
+          mkdir -p prior_smart quality-artifacts
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence; do
+            git show 0de3ef21f9692bcac918e23d7da9095e2de8aea3:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > prior_smart/$h.h
+          done
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I . tests/smart_efficiency_test.cpp -o smart_efficiency_test
+          set -o pipefail
+          ./smart_efficiency_test | tee quality-artifacts/smart-efficiency.txt
+      - name: Refined perception, local component protection and disabled-model parity
+        run: |
+          mkdir -p quality-artifacts
+          set -o pipefail
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/perceptual_component_test.cpp -o perceptual_component_test
+          ./perceptual_component_test | tee quality-artifacts/perceptual-component.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/perceptual_component_test.cpp -o perceptual_component_san
+          ./perceptual_component_san
+      - name: Baseline parity and four-instance DSP benchmark
+        run: |
+          mkdir -p baseline quality-artifacts
+          git show 986845bb6fe04c7f52e2d08182fb44f75902690d:Source/ZeroLatencyEngine.h | sed -e 's/"SpacerDSP.h"/"BaselineSpacerDSP.h"/' -e 's/namespace skell/namespace baseline_skell/g' > baseline/BaselineZeroLatencyEngine.h
+          git show 986845bb6fe04c7f52e2d08182fb44f75902690d:Source/SpacerDSP.h | sed 's/namespace skell/namespace baseline_skell/g' > baseline/BaselineSpacerDSP.h
+          g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -I Source -I baseline tests/optimization_parity.cpp -o optimization_parity
+          set -o pipefail
+          ./optimization_parity | tee quality-artifacts/optimization-parity.txt
+      - name: Level sensitivity law, exact V17 parity and detector sweeps
+        run: |
+          mkdir -p prior quality-artifacts
+          git show a732ece7f9cdc5c9753d0a2dec36c23e6043c855:Source/ZeroLatencyEngine.h | sed -e 's/"SpacerDSP.h"/"PriorSpacerDSP.h"/' -e 's/namespace skell/namespace prior_skell/g' > prior/PriorZeroLatencyEngine.h
+          git show a732ece7f9cdc5c9753d0a2dec36c23e6043c855:Source/SpacerDSP.h | sed 's/namespace skell/namespace prior_skell/g' > prior/PriorSpacerDSP.h
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/test_level_law.cpp -o level_law
+          ./level_law
+          g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -Werror -I Source -I prior tests/level_sensitivity_test.cpp -o level_sensitivity_test
+          set -o pipefail
+          ./level_sensitivity_test | tee quality-artifacts/level-sensitivity.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I prior tests/level_sensitivity_test.cpp -o level_sensitivity_san
+          ./level_sensitivity_san
+      - name: Detector overload recovery, fast-response and exact parent parity
+        run: |
+          mkdir -p prior_response quality-artifacts
+          git show 57e8270661dfd4f9a9ab7a50544713114b1b00e8:Source/ZeroLatencyEngine.h | sed -e 's/"SpacerDSP.h"/"PriorSpacerDSP.h"/' -e 's/"LevelSensitivity.h"/"PriorLevelSensitivity.h"/' -e 's/namespace skell/namespace prior_skell/g' > prior_response/PriorZeroLatencyEngine.h
+          git show 57e8270661dfd4f9a9ab7a50544713114b1b00e8:Source/SpacerDSP.h | sed 's/namespace skell/namespace prior_skell/g' > prior_response/PriorSpacerDSP.h
+          git show 57e8270661dfd4f9a9ab7a50544713114b1b00e8:Source/LevelSensitivity.h | sed 's/namespace skell/namespace prior_skell/g' > prior_response/PriorLevelSensitivity.h
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/test_detector_response.cpp -o detector_response
+          ./detector_response
+          g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -Werror -I Source -I prior_response tests/detector_response_test.cpp -o detector_response_test
+          set -o pipefail
+          ./detector_response_test | tee quality-artifacts/detector-response.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I prior_response tests/detector_response_test.cpp -o detector_response_san
+          ./detector_response_san
+      - name: Smart Space overlap diagnostics and delta reconstruction
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/spectral_intelligence_test.cpp -o spectral_intelligence_test
+          ./spectral_intelligence_test
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/protection_tempo_test.cpp -o protection_tempo_test
+          ./protection_tempo_test
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/protection_tempo_test.cpp -o protection_tempo_san
+          ./protection_tempo_san
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/mix_intelligence_test.cpp -o mix_intelligence_test
+          ./mix_intelligence_test
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/mix_intelligence_test.cpp -o mix_intelligence_san
+          ./mix_intelligence_san
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/smart_space_test.cpp -o smart_space_test
+          set -o pipefail
+          ./smart_space_test | tee quality-artifacts/smart-space.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/smart_space_test.cpp -o smart_space_san
+          ./smart_space_san
       - name: Verify compatibility parameter IDs
         run: python3 tests/parameter_contract_test.py
+      - name: Strict preview package regression
+        run: python3 tests/preview_package_test.py
+      - name: Strict VST3 moduleinfo normalizer regression
+        run: python3 tests/moduleinfo_normalizer_test.py
       - name: DSP tests (zero-latency engine)
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/live_dsp_test.cpp -o live_dsp_test
@@ -25,6 +165,26 @@ jobs:
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -pthread -I Source tests/display_rt_test.cpp -o display_rt_test
           ./display_rt_test
+      - name: Repeatable block-time profiling (UI open and closed)
+        run: |
+          g++ -O3 -std=c++17 -Wall -Wextra -Wpedantic -pthread -I Source tests/performance_matrix.cpp -o performance_matrix
+          mkdir -p quality-artifacts
+          ./performance_matrix > quality-artifacts/cpu_profile.csv
+          cat quality-artifacts/cpu_profile.csv
+      - name: Offline DSP sound check with 15-second dry/key/processed WAVs
+        run: |
+          g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/audio_render.cpp -o audio_render
+          mkdir -p quality-artifacts
+          ./audio_render quality-artifacts
+          ./audio_render quality-artifacts sensitive
+          ./audio_render quality-artifacts fast-legacy
+          ./audio_render quality-artifacts fast
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SkellSpacer-V17-DSP-Audio-and-CPU
+          retention-days: 7
+          path: quality-artifacts/
+          if-no-files-found: error
       - name: Stress test
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wpedantic -I Source tests/stress_test.cpp -o stress_test
@@ -33,39 +193,84 @@ jobs:
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/realtime_allocation_test.cpp -o realtime_allocation_test
           ./realtime_allocation_test
+
   build:
     runs-on: windows-latest
     needs: dsp-tests
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Configure
         run: cmake -S . -B build -A x64 -DSKELL_ENABLE_EDITOR_AUDIT=${{ github.event_name == 'pull_request' && 'ON' || 'OFF' }}
       - name: Build
         run: cmake --build build --config Release --parallel 2
-      - name: Package
+
+      - name: Verify native state migration and roundtrip
+        if: github.event_name == 'pull_request'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIStress.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Compiled state test executable missing' }
+          & $exe.FullName --state-only
+          if ($LASTEXITCODE -ne 0) { throw "State migration test failed ($LASTEXITCODE)" }
+
+      - name: Stage and verify Windows VST3 bundle
         shell: pwsh
         run: |
           $plugin = 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3'
-          if (-not (Test-Path $plugin)) {
-            Get-ChildItem -Path build -Recurse -Filter '*.vst3' | ForEach-Object FullName
-            throw 'VST3 bundle missing'
-          }
-          if (-not (Test-Path "$plugin/Contents/x86_64-win/Skell Spacer.vst3")) { throw 'VST3 binary missing inside the bundle' }
-          Compress-Archive -Path $plugin -DestinationPath skell-spacer-vst-Windows-VST3.zip
-      - uses: actions/upload-artifact@v4
-        with:
-          retention-days: 7
-          name: skell-spacer-vst-Windows-VST3
-          path: skell-spacer-vst-Windows-VST3.zip
-          if-no-files-found: error
+          $binary = "$plugin/Contents/x86_64-win/Skell Spacer.vst3"
+          $moduleInfo = "$plugin/Contents/Resources/moduleinfo.json"
+          $releaseBundles = @(Get-ChildItem -Path 'build/SkellSpacer_artefacts/Release' -Recurse -Directory -Filter '*.vst3')
+          if ($releaseBundles.Count -ne 1 -or $releaseBundles[0].FullName -ne (Resolve-Path $plugin).Path) { throw 'Missing or duplicate Release VST3 bundles' }
+          if (-not (Test-Path $binary)) { throw 'VST3 Windows x64 binary missing' }
+          if (-not (Test-Path $moduleInfo)) { throw 'VST3 moduleinfo.json missing' }
 
-      # Release-candidate-only real JUCE editor audit (not an everyday screenshot workflow).
-      # Not executed on main, release, production or manual builds.
+          & python tools/normalize_vst3_moduleinfo.py --file $moduleInfo --expected-name 'Skell Spacer' --expected-vendor 'Skell Audio'
+          if ($LASTEXITCODE -ne 0) { throw 'Strict VST3 moduleinfo normalization/validation failed' }
+          $metadata = Get-Content -Raw $moduleInfo | ConvertFrom-Json -ErrorAction Stop
+          if ($metadata.Name -ne 'Skell Spacer' -or $metadata.'Factory Info'.Vendor -ne 'Skell Audio') {
+            throw 'Strictly parsed VST3 module identity mismatch'
+          }
+
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $binary).Path)
+          if ($bytes.Length -lt 4096 -or $bytes[0] -ne 0x4d -or $bytes[1] -ne 0x5a) { throw 'Invalid Windows MZ header' }
+          $pe = [System.BitConverter]::ToInt32($bytes, 0x3c)
+          if ($pe -lt 64 -or $pe -gt ($bytes.Length - 26)) { throw 'Invalid PE offset' }
+          if ($bytes[$pe] -ne 0x50 -or $bytes[$pe+1] -ne 0x45 -or $bytes[$pe+2] -ne 0 -or $bytes[$pe+3] -ne 0) { throw 'Invalid PE signature' }
+          if ([System.BitConverter]::ToUInt16($bytes, $pe+4) -ne 0x8664 -or
+              [System.BitConverter]::ToUInt16($bytes, $pe+24) -ne 0x20b) { throw 'Expected Windows x64 PE32+ binary' }
+
+          $moduleText = Get-Content -Raw $moduleInfo
+          $nameMatch = [regex]::Match($moduleText, '"Name"\s*:\s*"([^"]+)"')
+          $versionMatch = [regex]::Match($moduleText, '"Version"\s*:\s*"([^"]+)"')
+          $vendorMatch = [regex]::Match($moduleText, '"Vendor"\s*:\s*"([^"]+)"')
+          if (-not $nameMatch.Success -or $nameMatch.Groups[1].Value -ne 'Skell Spacer') { throw 'VST3 module name mismatch' }
+          if (-not $vendorMatch.Success -or $vendorMatch.Groups[1].Value -ne 'Skell Audio') { throw 'VST3 vendor mismatch' }
+          if (-not $versionMatch.Success -or $versionMatch.Groups[1].Value -notmatch '^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$') { throw 'VST3 module version missing or invalid' }
+          if ($moduleText -notmatch '"Category"\s*:\s*"Audio Module Class"' -or
+              $moduleText -notmatch '"Category"\s*:\s*"Component Controller Class"') { throw 'Expected VST3 audio and controller classes missing' }
+
+          $dist = Join-Path $PWD 'dist'
+          if (Test-Path $dist) { Remove-Item -Recurse -Force $dist }
+          New-Item -ItemType Directory -Path $dist | Out-Null
+          Copy-Item -Path $plugin -Destination $dist -Recurse
+          $stagedBundle = Join-Path $dist 'Skell Spacer.vst3'
+          $bundleDirs = @(Get-ChildItem -Path $dist -Directory -Filter '*.vst3' -Recurse)
+          $moduleFiles = @(Get-ChildItem -Path $stagedBundle -File -Filter '*.vst3' -Recurse)
+          $exeFiles = @(Get-ChildItem -Path $dist -File -Filter '*.exe' -Recurse)
+          $zipFiles = @(Get-ChildItem -Path $dist -File -Filter '*.zip' -Recurse)
+          if ($bundleDirs.Count -ne 1) { throw "Expected exactly one VST3 bundle, found $($bundleDirs.Count)" }
+          if ($moduleFiles.Count -ne 1 -or $moduleFiles[0].Name -ne 'Skell Spacer.vst3') { throw "Expected exactly one VST3 module, found $($moduleFiles.Count)" }
+          if ($exeFiles.Count -ne 0) { throw "Unexpected standalone EXE in VST3-only package: $($exeFiles.Count)" }
+          if ($zipFiles.Count -ne 0) { throw "Nested ZIP found in staged package: $($zipFiles.Count)" }
+
       - name: Build actual JUCE editor audit
-        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        if: github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116')
         run: cmake --build build --config Release --target SkellSpacerUIAudit SkellSpacerUIStress --parallel 2
       - name: Render real editor and exercise controls
-        if: github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        if: github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116')
         shell: pwsh
         run: |
           $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
@@ -80,27 +285,50 @@ jobs:
           $screens = @(Get-ChildItem ui-audit -Filter '*.png')
           if ($screens.Count -lt 15) { throw "Expected 15+ actual editor screenshots; got $($screens.Count)" }
       - uses: actions/upload-artifact@v4
-        if: always() && github.event_name == 'pull_request' && github.head_ref == 'chore/spacer-v16-compatibility-gate-20261115'
+        if: always() && github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116')
         with:
           retention-days: 7
-          name: SkellSpacer-V16-Real-Editor-Audit
+          name: SkellSpacer-V17-Real-Editor-Audit
           path: ui-audit/*.png
           if-no-files-found: warn
-      # Host-style check (load, bus layouts, state save/restore, automation, parameter fuzzing, threading).
-      # Runs after the upload so a validator failure never hides the build; the run just goes red.
-      - name: Validate with pluginval
+
+      # Explicit requested Creator video benchmark, not an everyday screenshot
+      # workflow. Reuse the already compiled opt-in audit executable.
+      - name: Produce synchronized real Spacer video source
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Get-ChildItem -Path build -Recurse -File -Filter 'SkellSpacerUIAudit.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'Existing compiled editor audit executable missing' }
+          $revision = (git rev-parse HEAD).Trim()
+          & $exe.FullName --demo60 (Join-Path $PWD 'spacer-editor-demo') $revision
+          if ($LASTEXITCODE -ne 0) { throw "Real Spacer video source failed: $LASTEXITCODE" }
+          if (@(Get-ChildItem spacer-editor-demo -Filter 'frame_*.png').Count -ne 960) { throw 'Incomplete 60 FPS frame sequence' }
+          foreach ($name in @('capture.json','editor.csv','controls.csv','dry.wav','processed.wav','sidechain.wav')) {
+            if (-not (Test-Path "spacer-editor-demo/$name")) { throw "Missing $name" }
+          }
+          $meta = Get-Content spacer-editor-demo/capture.json | ConvertFrom-Json
+          if ($meta.revision -ne $revision -or $meta.samples -ne 768000 -or $meta.fps -ne 60 -or $meta.frame_count -ne 960 -or $meta.latency_samples -ne 0) { throw 'Capture provenance or clock mismatch' }
+          if ((Get-Content spacer-editor-demo/controls.csv).Count -ne 5) { throw 'Missing real control transitions' }
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        with:
+          name: SkellSpacer-Actual-Editor-Video-Source
+          path: spacer-editor-demo/
+          retention-days: 7
+          if-no-files-found: error
+
+      - name: Validate staged VST3 with pluginval
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri https://github.com/Tracktion/pluginval/releases/latest/download/pluginval_Windows.zip -OutFile pluginval.zip
           Expand-Archive pluginval.zip -DestinationPath pluginval
-          # pluginval_Windows.zip supplies a GUI-subsystem executable. Direct PowerShell
-          # invocation can return before it exits, leaving $LASTEXITCODE unset and
-          # marking a successful validation as failed. Explicitly wait and read ExitCode.
           $validator = (Resolve-Path './pluginval/pluginval.exe').Path
-          $vst3 = (Resolve-Path 'build/SkellSpacer_artefacts/Release/VST3/Skell Spacer.vst3').Path
+          $stagedBundle = (Resolve-Path 'dist/Skell Spacer.vst3').Path
           New-Item -ItemType Directory -Force -Path pluginval-log | Out-Null
           $logDir = (Resolve-Path './pluginval-log').Path
-          $arguments = "--strictness-level 5 --validate-in-process --output-dir `"$logDir`" `"$vst3`""
+          $arguments = '--strictness-level 5 --validate-in-process --output-dir "' + $logDir + '" "' + $stagedBundle + '"'
           $validation = Start-Process -FilePath $validator -ArgumentList $arguments -Wait -PassThru -NoNewWindow
           if ($null -eq $validation.ExitCode) { throw 'pluginval finished without an exit code' }
           if ($validation.ExitCode -ne 0) { throw "pluginval failed ($($validation.ExitCode))" }
@@ -111,3 +339,166 @@ jobs:
           name: pluginval-log
           path: pluginval-log
           if-no-files-found: ignore
+
+      - name: Stage private-preview installer and notices
+        shell: pwsh
+        run: |
+          Copy-Item -LiteralPath 'scripts/Install-SkellSpacerPreview.ps1' -Destination 'dist/Install-SkellSpacerPreview.ps1'
+          Copy-Item -LiteralPath 'docs/WINDOWS-VST3-INSTALL.md' -Destination 'dist/WINDOWS-VST3-INSTALL.md'
+          Copy-Item -LiteralPath 'docs/THIRD_PARTY_NOTICES.md' -Destination 'dist/THIRD_PARTY_NOTICES.md'
+
+      - name: Write provisional provenance and checksums
+        shell: pwsh
+        run: |
+          $stagedBundle = Join-Path $PWD 'dist/Skell Spacer.vst3'
+          $binary = Join-Path $stagedBundle 'Contents/x86_64-win/Skell Spacer.vst3'
+          $moduleInfo = Join-Path $stagedBundle 'Contents/Resources/moduleinfo.json'
+          $module = Get-Content -Raw $moduleInfo | ConvertFrom-Json -ErrorAction Stop
+          $factory = $module.'Factory Info'
+          $classIds = @($module.Classes | ForEach-Object { ([string]$_.CID).ToLowerInvariant() } | Sort-Object)
+          $binaryHash = (Get-FileHash -LiteralPath $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+          $moduleHash = (Get-FileHash -LiteralPath $moduleInfo -Algorithm SHA256).Hash.ToLowerInvariant()
+          $vendorUrl = [string]$factory.URL
+          $supportEmail = [string]$factory.'E-Mail'
+          $vendorUrlConfigured = $vendorUrl -match '^https://\S+$'
+          $supportEmailConfigured = $supportEmail -match '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+          $uiAuditEnabled = '${{ github.event_name == 'pull_request' && (github.head_ref == 'dev/spacer-v17-sound-host-release-20261115' || github.head_ref == 'release/spacer-v17-flat-verified-package-20261116') }}' -eq 'true'
+          $uiScreens = @(Get-ChildItem -Path 'ui-audit' -File -Filter '*.png' -ErrorAction SilentlyContinue)
+          if ($uiAuditEnabled -and $uiScreens.Count -lt 15) { throw "Expected 15+ actual JUCE UI screenshots; got $($uiScreens.Count)" }
+
+          $commercialBlockers = @('Commercial license/attribution review and owner approval remain outstanding')
+          if (-not $vendorUrlConfigured) { $commercialBlockers += 'Vendor URL is not configured in VST3 module metadata' }
+          if (-not $supportEmailConfigured) { $commercialBlockers += 'Support email is not configured in VST3 module metadata' }
+          $releaseBlockers = @(
+            'FL Studio VST3 scan, sidechain routing, save/reopen and automation acceptance not yet performed',
+            'Repository-specific local Quick4 renderer is not yet wired or verified',
+            'User listening approval for real vocal/beat A/B is still required',
+            'CI CPU profile is not a measurement on the owner target hardware',
+            'Installer/update/rollback tests have not yet run',
+            'Commercial licensing/attribution and storefront approval remain outstanding'
+          )
+          if (-not $vendorUrlConfigured) { $releaseBlockers += 'Vendor URL is empty in current VST3 module metadata' }
+          if (-not $supportEmailConfigured) { $releaseBlockers += 'Support email is empty in current VST3 module metadata' }
+
+          $manifest = [ordered]@{
+            schema_version = 1
+            product = $module.Name
+            vendor = $factory.Vendor
+            version = $module.Version
+            candidate_label = 'V17 RC'
+            release_channel = 'preview'
+            format = 'VST3'
+            platform = 'windows-x64'
+            release_status = 'preview-only'
+            source_commit = '${{ github.event.pull_request.head.sha || github.sha }}'
+            ci_checkout_commit = $env:GITHUB_SHA
+            workflow_run_id = $env:GITHUB_RUN_ID
+            binary = [ordered]@{
+              path = 'Skell Spacer.vst3/Contents/x86_64-win/Skell Spacer.vst3'
+              size_bytes = (Get-Item -LiteralPath $binary).Length
+              sha256 = $binaryHash
+              architecture = 'AMD64'
+              pe_format = 'PE32+'
+            }
+            moduleinfo = [ordered]@{
+              path = 'Skell Spacer.vst3/Contents/Resources/moduleinfo.json'
+              sha256 = $moduleHash
+              strict_json = $true
+              unique_class_ids = $classIds
+              normalization_applied = $false
+            }
+            validation = [ordered]@{
+              bundle_structure = 'passed'
+              metadata_identity = 'passed'
+              pe32_plus_amd64 = 'passed'
+              pluginval = [ordered]@{ strictness_level = 5; result = 'passed' }
+              installer_update_rollback = 'pending'
+            }
+            portable_dsp_tests_verified_in_same_run = $true
+            realtime_allocation_test_verified_in_same_run = $true
+            cpu_matrix_generated_in_same_run = $true
+            offline_audio_render_generated_in_same_run = $true
+            windows_juce_editor_audit_verified_in_same_run = ($uiAuditEnabled -and $uiScreens.Count -ge 15)
+            ui_screenshot_count = $uiScreens.Count
+            pluginval_verified_in_same_run = $true
+            pluginval_strictness_level = 5
+            fl_studio_verified = $false
+            quick4_local_renderer_verified = $false
+            vendor_url_configured = $vendorUrlConfigured
+            support_email_configured = $supportEmailConfigured
+            user_audio_ab_approved = $false
+            target_hardware_cpu_verified = $false
+            host_state_reopen_verified = $false
+            licensing_review_verified = $false
+            installer_verified = $false
+            updater_rollback_verified = $false
+            installer_test_assertions = 0
+            storefront_verified = $false
+            commercial_release_eligible = $false
+            commercial_metadata_gate = [ordered]@{
+              status = 'blocked'
+              blockers = $commercialBlockers
+              owner_approved_license_asserted = $false
+            }
+            status = 'PREVIEW_ONLY'
+            release_blockers = $releaseBlockers
+          }
+          $manifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 (Join-Path $PWD 'dist/build-info.json')
+
+          $distRoot = (Resolve-Path 'dist').Path
+          $hashLines = foreach ($file in (Get-ChildItem -LiteralPath $distRoot -File -Recurse | Sort-Object FullName)) {
+            $relative = [IO.Path]::GetRelativePath($distRoot, $file.FullName).Replace('\', '/')
+            "$((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+          }
+          [IO.File]::WriteAllLines((Join-Path $distRoot 'SHA256SUMS.txt'), $hashLines, [Text.UTF8Encoding]::new($false))
+
+      - name: Test private-preview installer, update and rollback
+        shell: pwsh
+        run: |
+          $selfTestOutput = & 'dist/Install-SkellSpacerPreview.ps1' -SelfTest 2>&1 | Out-String
+          Write-Host $selfTestOutput
+          $match = [regex]::Match($selfTestOutput, 'PASS:\s+(\d+)\s+Skell Spacer installer/update/rollback assertions')
+          if (-not $match.Success) { throw 'Installer self-test did not report a passing assertion count' }
+          $assertions = [int]$match.Groups[1].Value
+          if ($assertions -lt 20) { throw "Installer regression suite too small: $assertions assertions" }
+          $assertions | Set-Content -Encoding ascii (Join-Path $env:RUNNER_TEMP 'skellspacer-installer-assertions.txt')
+
+          $whatIfDestination = Join-Path $env:RUNNER_TEMP 'SkellSpacer-WhatIf-VST3'
+          $whatIfBackup = Join-Path $env:RUNNER_TEMP 'SkellSpacer-WhatIf-Backups'
+          & 'dist/Install-SkellSpacerPreview.ps1' -PackageRoot 'dist' -Destination $whatIfDestination -BackupRoot $whatIfBackup -WhatIf
+          if (Test-Path -LiteralPath $whatIfDestination) { throw '-WhatIf unexpectedly created a VST3 destination' }
+          if (Test-Path -LiteralPath $whatIfBackup) { throw '-WhatIf unexpectedly created a backup directory' }
+
+      - name: Finalize preview provenance and package checksums
+        shell: pwsh
+        run: |
+          $manifestPath = Join-Path $PWD 'dist/build-info.json'
+          $manifest = Get-Content -Raw $manifestPath | ConvertFrom-Json -AsHashtable -ErrorAction Stop
+          $assertionPath = Join-Path $env:RUNNER_TEMP 'skellspacer-installer-assertions.txt'
+          if (-not (Test-Path -LiteralPath $assertionPath -PathType Leaf)) { throw 'Installer assertion evidence is missing' }
+          $assertions = [int](Get-Content -Raw $assertionPath)
+          if ($assertions -lt 20) { throw 'Installer assertion count fell below the required release gate' }
+          $manifest.installer_verified = $true
+          $manifest.updater_rollback_verified = $true
+          $manifest.installer_test_assertions = $assertions
+          $manifest.validation.installer_update_rollback = 'passed'
+          $manifest.release_blockers = @($manifest.release_blockers | Where-Object { $_ -ne 'Installer/update/rollback tests have not yet run' })
+          $manifest | ConvertTo-Json -Depth 12 | Set-Content -Encoding utf8 $manifestPath
+
+          $distRoot = (Resolve-Path 'dist').Path
+          $hashLines = foreach ($file in (Get-ChildItem -LiteralPath $distRoot -File -Recurse |
+              Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object FullName)) {
+            $relative = [IO.Path]::GetRelativePath($distRoot, $file.FullName).Replace('\', '/')
+            "$((Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant())  $relative"
+          }
+          [IO.File]::WriteAllLines((Join-Path $distRoot 'SHA256SUMS.txt'), $hashLines, [Text.UTF8Encoding]::new($false))
+
+      - name: Verify exact preview package inventory and checksums
+        run: python tools/verify_preview_package.py dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          retention-days: 14
+          name: skell-spacer-vst-Windows-VST3
+          path: dist/
+          if-no-files-found: error

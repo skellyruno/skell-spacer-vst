@@ -17,19 +17,46 @@ public:
   void drawButtonText(juce::Graphics&, juce::TextButton&, bool highlighted, bool down) override;
 };
 
-class SpectrumView final : public juce::Component {
+// Standard single-value controls with scale-aware fonts, separate from the
+// range-slider skin (which deliberately draws two handles).
+class SmartLookAndFeel final : public juce::LookAndFeel_V4 {
+public:
+  juce::Font getComboBoxFont(juce::ComboBox&) override;
+  juce::Font getLabelFont(juce::Label&) override;
+  int getSliderThumbRadius(juce::Slider&) override;
+};
+
+class SpectrumView final : public juce::Component, public juce::SettableTooltipClient {
 public:
   explicit SpectrumView(SkellAudioProcessor& p) : proc(p) {}
   void tick();
   void paint(juce::Graphics&) override;
   float maxCutDb() const { return peakCut; }
+  ~SpectrumView() override { endBrushGesture(); }
+  void setSmartView(bool show) { smartView = show; if(!show) setBrushMode(false); repaint(); }
+  void setBrushMode(bool enabled);
+  void mouseDown(const juce::MouseEvent&) override;
+  void mouseDrag(const juce::MouseEvent&) override;
+  void mouseUp(const juce::MouseEvent&) override;
+  void clearBrush();
+  const skell::ZeroLatencyEngine::SmartSnapshot& smartData() const { return smartSnapshot; }
 private:
+  void paintBrush(juce::Graphics&,juce::Rectangle<float>,float);
+  void brushAt(juce::Point<float>,bool);
+  void endBrushGesture();
+  bool brushMode=false, brushDragging=false, brushErase=false;
+  int lastBrushNode=-1;
+  float lastBrushValue=0.f;
+  std::array<bool,skell::ProtectionCurve::count> brushGestures{};
   SkellAudioProcessor& proc;
   static constexpr int N = skell::ZeroLatencyEngine::kDisp;
   float mainDb[N] = {}, scDb[N] = {}, cutDb[N] = {};
   float sMain[N] = {}, sSc[N] = {}, sCut[N] = {};
   float peakCut = 0.0f;
-  bool primed = false;
+  bool primed = false, smartView = false;
+  skell::ZeroLatencyEngine::SmartSnapshot smartSnapshot;
+  float overlap[skell::ZeroLatencyEngine::kBands] = {}, protection[skell::ZeroLatencyEngine::kBands] = {};
+  double lastTickMs = 0.0, lastAnalysisMs = 0.0;
 };
 
 // A two-thumb log-frequency range slider bound to a low and a high parameter (used for the band and the sidechain filter).
@@ -62,6 +89,9 @@ private:
   void repaintDesign(juce::Rectangle<float> r);
   void mouseDown(const juce::MouseEvent&) override;
   void beginTypedEntry(juce::Slider&);
+  void showSmartPage(bool);
+  void bindSmartControl();
+  void updateSmartColours();
 
   SkellAudioProcessor& proc;
   int theme = 0;
@@ -69,11 +99,21 @@ private:
   SpectrumView spectrum;
   juce::Slider amount, smooth, pan, attack, release;
   juce::TextButton freeze { "Freeze" }, power { "Power" }, listen { "Listen" }, skinButton, msToggle, bandToggle;
+  juce::TextButton smartPageButton {"Smart"}, deltaButton {"Delta"}, brushButton {"Brush"}, clearBrushButton {"Clear"};
+  SmartLookAndFeel smartLook;
+  juce::ComboBox smartSelector;
+  juce::Slider smartValue;
+  std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> smartValueA;
+  juce::AudioProcessorValueTreeState::ButtonAttachment deltaA;
+  bool smartPage = false;
 
   juce::AudioProcessorValueTreeState::SliderAttachment amountA, smoothA, panA, attackA, releaseA;
   juce::AudioProcessorValueTreeState::ButtonAttachment freezeA, powerA, listenA, msA;
   BandControl band, scBand;       // affected range (Low / High Cut) and sidechain filter (high-pass / low-pass), shown one at a time
   void showSidechainFilter(bool show);   // the bottom card is either the Low/High Cut band or the sidechain filter
+  int previousMeterSegments = -1;
+  double previousDisplayRate = 0.0;
+  bool previousMsMode = false;
   bool scActive = false;   // a sidechain is connected and carrying audio (status line)
   bool scView = false;     // the bottom card currently shows the sidechain filter
   juce::Label entry;       // inline value editor (right-click a knob)

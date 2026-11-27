@@ -40,6 +40,18 @@ int main() {
       }
       if(b%7==0) {
         p.amount=(float)(b%100)/100.f;
+        p.levelSensitivity=(float)(b%21)/20.f;
+        p.smart=(float)(b%17)/16.f;
+        p.punchProtect=.8f; p.bassProtect=.7f; p.adaptiveRelease=.6f;
+        p.spectralFocus=.8f; p.vocalFocus=.7f; p.perceptualFocus=.6f;
+        p.harmonicProtect=.9f; p.depthBudget=.5f;
+        p.sonicTerritory=.7f; p.humanEar=.6f; p.componentProtect=.5f; p.foresight=.8f;
+        p.refinedPerception=b%2==0;
+        p.cleanKey=.8f; p.phaseProtect=.7f; p.stereoDetail=static_cast<float>(b%4)/3.f;
+        p.tempoRecovery=.8f; p.hostBpm=b%4==0?0.f:90.f+static_cast<float>(b%80);
+        p.protect[static_cast<size_t>(b%skell::ProtectionCurve::count)]=.85f;
+        p.deltaListen=b%3==0;
+        p.attackMs=1.f+(float)(b%5);
         p.pan=(float)(b%19)/9.f-1.f;
         p.scLowHz=20.f+(float)(b%12)*30.f;
         e.setParams(p);

@@ -37,6 +37,26 @@ SkellAudioProcessor::SkellAudioProcessor()
   pListen = parameters.getRawParameterValue("listen");
   pScLow = parameters.getRawParameterValue("schp");
   pScHigh = parameters.getRawParameterValue("sclp");
+  pLevelSensitivity = parameters.getRawParameterValue("levelSensitivity");
+  pSmart = parameters.getRawParameterValue("smartSpace");
+  pPunch = parameters.getRawParameterValue("punchProtect");
+  pBass = parameters.getRawParameterValue("bassProtect");
+  pAdaptive = parameters.getRawParameterValue("adaptiveRelease");
+  pDelta = parameters.getRawParameterValue("deltaListen");
+  pSpectral = parameters.getRawParameterValue("spectralFocus");
+  pVocal = parameters.getRawParameterValue("vocalFocus");
+  pPerceptual = parameters.getRawParameterValue("perceptualFocus");
+  pHarmonic = parameters.getRawParameterValue("harmonicProtect");
+  pDepth = parameters.getRawParameterValue("depthBudget");
+  pTerritory = parameters.getRawParameterValue("sonicTerritory");
+  pEar = parameters.getRawParameterValue("humanEar");
+  pComponent = parameters.getRawParameterValue("componentProtect");
+  pForesight = parameters.getRawParameterValue("foresight");
+  pCleanKey=parameters.getRawParameterValue("cleanKey");
+  pPhaseProtect=parameters.getRawParameterValue("phaseProtect");
+  pStereoDetail=parameters.getRawParameterValue("stereoDetail");
+  pTempo=parameters.getRawParameterValue("tempoRecovery");
+  for(size_t i=0;i<pProtect.size();++i) pProtect[i]=parameters.getRawParameterValue(protectionIds[i]);
   setLatencySamples(0);
 }
 
@@ -90,6 +110,33 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
         return t.containsIgnoreCase("l") ? -v : v; })));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"ms", 1}, "Mid/Side", false));
   layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"listen", 1}, "Listen", false));
+  // Additive, versioned host parameter; existing IDs and editor layout unchanged.
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"levelSensitivity", 2}, "Level Sensitivity",
+    juce::NormalisableRange<float>(0.0f, 100.0f, 0.1f), 0.0f,
+    AudioParameterFloatAttributes().withLabel("%").withStringFromValueFunction(pct)));
+  // All additions are versioned; Classic remains the default.
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"smartSpace", 3}, "Smart Space", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"punchProtect", 3}, "Punch Protect", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"bassProtect", 3}, "808 Protection", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"adaptiveRelease", 3}, "Adaptive Release", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterBool>(juce::ParameterID{"deltaListen", 3}, "Delta Listen", false));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"spectralFocus", 4}, "Spectral Focus", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"vocalFocus", 4}, "Vocal Focus", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"perceptualFocus", 4}, "Perceptual Focus", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"harmonicProtect", 4}, "Harmonic Protect", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"depthBudget", 4}, "Adaptive Depth", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"sonicTerritory", 5}, "Sonic Territory", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"humanEar", 5}, "Human Ear", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"componentProtect", 5}, "Component Protect", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"foresight", 5}, "Musical Foresight", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"tempoRecovery", 6}, "Tempo Recovery", juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  for(int i=0;i<skell::ProtectionCurve::count;++i) {
+    const auto name="Protect "+freqText(20.f*std::exp2(.5f*static_cast<float>(i)));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{protectionIds[i],6},name,juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  }
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"cleanKey",7},"Clean Key",juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"phaseProtect",7},"Phase Protect",juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"stereoDetail",7},"Stereo Detail",juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   return layout;
 }
 
@@ -97,8 +144,10 @@ void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
   engine.prepare(sampleRate);
   sampleRateHz.store(sampleRate);
   sidechainHold = 0;
+  hostBpm.store(0.f,std::memory_order_relaxed);
   sidechainActive.store(false);
   listenMix = 0.f;
+  lastMonitor = 0.f;
 }
 
 void SkellAudioProcessor::readSpectrum(float* mainDb, float* sideDb, float* cutDb) const {
@@ -122,6 +171,7 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   skell::SpacerParams p;
   p.amount = pAmount->load() * 0.01f;
   p.smooth = pSmooth->load() * 0.01f;
+  p.levelSensitivity = pLevelSensitivity->load() * 0.01f;
   p.attackMs = pAttack->load();
   p.releaseMs = pRelease->load();
   p.lowHz = pLow->load();
@@ -132,6 +182,32 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.power = pPower->load() > 0.5f;
   p.pan = pPan->load() * 0.01f;  // host Pan -100..100 -> engine -1..1
   p.ms = pMs->load() > 0.5f;
+  p.smart = pSmart->load() * 0.01f;
+  p.punchProtect = pPunch->load() * 0.01f;
+  p.bassProtect = pBass->load() * 0.01f;
+  p.adaptiveRelease = pAdaptive->load() * 0.01f;
+  p.spectralFocus = pSpectral->load() * 0.01f;
+  p.vocalFocus = pVocal->load() * 0.01f;
+  p.perceptualFocus = pPerceptual->load() * 0.01f;
+  p.harmonicProtect = pHarmonic->load() * 0.01f;
+  p.depthBudget = pDepth->load() * 0.01f;
+  p.sonicTerritory = pTerritory->load() * 0.01f;
+  p.humanEar = pEar->load() * 0.01f;
+  p.componentProtect = pComponent->load() * 0.01f;
+  p.refinedPerception = refinedPerception.load(std::memory_order_relaxed);
+  p.foresight = pForesight->load() * 0.01f;
+  p.cleanKey=pCleanKey->load(std::memory_order_relaxed)*.01f;
+  p.phaseProtect=pPhaseProtect->load(std::memory_order_relaxed)*.01f;
+  p.stereoDetail=pStereoDetail->load(std::memory_order_relaxed)*.01f;
+  p.tempoRecovery=pTempo->load(std::memory_order_relaxed)*.01f;
+  // No assumed BPM. Tempo is optional and only read when the control is active.
+  if(p.tempoRecovery>0.f) if(auto* playhead=getPlayHead())
+    if(auto position=playhead->getPosition()) if(auto bpm=position->getBpm())
+      if(std::isfinite(*bpm)&&*bpm>=20.&&*bpm<=400.) p.hostBpm=static_cast<float>(*bpm);
+  hostBpm.store(p.hostBpm,std::memory_order_relaxed);
+  for(size_t i=0;i<pProtect.size();++i) p.protect[i]=pProtect[i]->load(std::memory_order_relaxed)*.01f;
+  const bool listenRequested = pListen->load() > 0.5f;
+  p.deltaListen = pDelta->load() > 0.5f && !listenRequested;
   engine.setParams(p);
 
   auto mainBuf = getBusBuffer(buffer, true, 0);
@@ -157,24 +233,30 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   sidechainActive.store(sidechainHold > 0, std::memory_order_relaxed);
 
   // Listen: monitor the sidechain (as the detector hears it, after its filters) instead of the track, with a 10 ms
-  // crossfade; nothing happens without a sidechain. Work in fixed chunks so the monitor copy needs no allocation.
-  const float listenTarget = (pListen->load() > 0.5f && nSc > 0) ? 1.f : 0.f;
-  if (nSc == 0) listenMix = 0.f;
+  // crossfade; when a host drops the bus, fade the detector tail to dry rather
+  // than instantly jumping back to the track. Work in fixed chunks; no allocation.
+  const float listenTarget = (listenRequested && nSc > 0) ? 1.f : 0.f;
   const float listenStep = (float) (1.0 / (0.010 * juce::jmax(1000.0, sampleRateHz.load())));
+  const float tailDecay = (float) std::exp(-1.0 / (0.004 * juce::jmax(1000.0, sampleRateHz.load())));
   for (int pos = 0; pos < n; pos += kChunk) {
     const int m = juce::jmin(kChunk, n - pos);
     float* chunk[2] = { nMain > 0 ? mainPtrs[0] + pos : nullptr, nMain > 1 ? mainPtrs[1] + pos : nullptr };
     const float* scChunk[2] = { nSc > 0 ? scPtrs[0] + pos : nullptr, nSc > 1 ? scPtrs[1] + pos : nullptr };
     float* mon[2] = { scMon[0], scMon[1] };
     engine.process(chunk, scChunk, nMain, nSc, m, mon);
-    if (nSc == 0 || (listenMix == listenTarget && listenTarget == 0.f)) continue;
+    if (listenMix == 0.f && listenTarget == 0.f) continue;
     for (int i = 0; i < m; ++i) {
-      listenMix = listenMix < listenTarget ? juce::jmin(listenTarget, listenMix + listenStep) : juce::jmax(listenTarget, listenMix - listenStep);
-      for (int c = 0; c < nMain; ++c) {
-        // Listen hears the exact mono key feeding analyse(), including anti-phase recovery.
-        const float s = scMon[0][i];
-        chunk[c][i] += (s - chunk[c][i]) * listenMix;
+      // Preserve the previous sample across a sudden host bus disconnect.
+      const float s = nSc > 0 ? scMon[0][i] : lastMonitor;
+      if (nSc > 0) lastMonitor = s;
+      else {
+        lastMonitor *= tailDecay;
+        if (std::abs(lastMonitor) < 1.0e-12f) lastMonitor = 0.f;
       }
+      listenMix = listenMix < listenTarget ? juce::jmin(listenTarget, listenMix + listenStep)
+                                           : juce::jmax(listenTarget, listenMix - listenStep);
+      for (int c = 0; c < nMain; ++c)
+        chunk[c][i] += (s - chunk[c][i]) * listenMix;
     }
   }
 }
@@ -184,13 +266,37 @@ juce::AudioProcessorEditor* SkellAudioProcessor::createEditor() { return new Ske
 void SkellAudioProcessor::getStateInformation(juce::MemoryBlock& dest) {
   auto state = parameters.copyState();
   state.setProperty("theme", themeIndex.load(), nullptr);
+  state.setProperty("perceptionModelVersion", refinedPerception.load() ? 2 : 1, nullptr);
   if (auto xml = state.createXml()) copyXmlToBinary(*xml, dest);
 }
 void SkellAudioProcessor::setStateInformation(const void* data, int size) {
   if (auto xml = getXmlFromBinary(data, size))
     if (xml->hasTagName(parameters.state.getType())) {
       themeIndex.store(juce::jlimit(0, 3, xml->getIntAttribute("theme", 0)));
-      parameters.replaceState(juce::ValueTree::fromXml(*xml));
+      auto state = juce::ValueTree::fromXml(*xml);
+      refinedPerception.store(xml->getIntAttribute("perceptionModelVersion", 1) == 2);
+      // An old project must restore legacy sound even after a sensitive preset
+      // was loaded in this same instance. APVTS's absent value is not enough.
+      if (!state.getChildWithProperty("id", "levelSensitivity").isValid()) {
+        juce::ValueTree legacyDefault("PARAM");
+        legacyDefault.setProperty("id", "levelSensitivity", nullptr);
+        legacyDefault.setProperty("value", 0.0f, nullptr);
+        state.appendChild(legacyDefault, nullptr);
+      }
+      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight", "tempoRecovery", "cleanKey", "phaseProtect", "stereoDetail"}) {
+        if (!state.getChildWithProperty("id", id).isValid()) {
+          juce::ValueTree legacyDefault("PARAM");
+          legacyDefault.setProperty("id", id, nullptr);
+          legacyDefault.setProperty("value", 0.0f, nullptr);
+          state.appendChild(legacyDefault, nullptr);
+        }
+      }
+      for(const auto* id:protectionIds) if(!state.getChildWithProperty("id",id).isValid()) {
+        juce::ValueTree node("PARAM");
+        node.setProperty("id",id,nullptr); node.setProperty("value",0.f,nullptr);
+        state.appendChild(node,nullptr);
+      }
+      parameters.replaceState(state);
     }
 }
 

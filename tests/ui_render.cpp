@@ -7,7 +7,7 @@
 #include <cstdio>
 
 // Hooks that juce_gui_extra normally provides; unused in an offscreen run.
-#if ! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS
+#if defined(SKELL_LEGACY_UI_STUBS) && (! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS)
 namespace juce {
 void privatePostSystemNotification(const String&, const String&) {}
 bool juce_handleXEmbedEvent(ComponentPeer*, void*) { return false; }
@@ -56,8 +56,115 @@ static void savePng(const juce::Image& img, const juce::File& f) {
   juce::PNGImageFormat().writeImageToStream(img, out);
 }
 
+#include "editor_demo.h"
+
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI init;
+  if (argc==4 && (juce::String(argv[1])=="--demo" || juce::String(argv[1])=="--demo60")) {
+    const bool ok=spacer_demo::run(juce::File(argv[2]),juce::String(argv[3]),juce::String(argv[1])=="--demo60"?60:24);
+    std::printf("[%s] offline Spacer editor demonstration\n",ok?"PASS":"FAIL");
+    return ok?0:1;
+  }
+  if (argc==4 && (juce::String(argv[1])=="--quick4" || juce::String(argv[1])=="--quick4-full")) {
+    const bool full=juce::String(argv[1])=="--quick4-full";
+    juce::File out(argv[2]); out.createDirectory();
+    SkellAudioProcessor p; p.enableAllBuses(); p.setRateAndBufferSizeDetails(48000.,512); p.prepareToPlay(48000.,512);
+    std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+    ed->setSize(SkellAudioProcessorEditor::defaultWidth,SkellAudioProcessorEditor::defaultHeight);
+    const auto capture=[&](const char* name){
+      pump(100); const auto img=ed->createComponentSnapshot(ed->getLocalBounds(),true,2.f);
+      savePng(img,out.getChildFile(name)); check(!img.isNull()&&out.getChildFile(name).getSize()>0,name);
+    };
+    capture("01_classic.png");
+    auto* page=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="smart_page";});
+    auto* delta=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="delta_monitor";});
+    auto* select=find<juce::ComboBox>(*ed,[](juce::ComboBox& b){return b.getComponentID()=="smart_selector";});
+    auto* value=find<juce::Slider>(*ed,[](juce::Slider& s){return s.getComponentID()=="smart_value";});
+    if(!page||!delta||!select||!value) return 1;
+    page->triggerClick(); pump();
+    value->setValue(100.,juce::sendNotificationSync);
+    check(p.parameters.getRawParameterValue("smartSpace")->load()>99.f,"Smart UI binds master");
+    p.parameters.getParameter("punchProtect")->setValueNotifyingHost(.65f);
+    p.parameters.getParameter("bassProtect")->setValueNotifyingHost(.70f);
+    p.parameters.getParameter("adaptiveRelease")->setValueNotifyingHost(.60f);
+    select->setSelectedId(2,juce::sendNotificationSync); pump();
+    check(std::abs(value->getValue()-65.)<.2,"Smart selector rebinds selected parameter");
+    feed(p,65); capture("02_smart_active.png");
+    delta->triggerClick(); pump(); check(p.parameters.getRawParameterValue("deltaListen")->load()>.5f,"Delta UI binding");
+    feed(p,20); capture("03_delta_active.png");
+    delta->triggerClick(); pump(); check(p.parameters.getRawParameterValue("deltaListen")->load()<.5f,"Delta off");
+    auto* logo=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="logo";});
+    if(!logo)return 1;
+    logo->triggerClick(); pump(); feed(p,20); capture("04_alternate_theme.png");
+    if(full) {
+      auto* brush=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="protect_brush";});
+      auto* clear=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="protect_clear";});
+      auto* graph=find<SpectrumView>(*ed,[](SpectrumView&){return true;});
+      if(!brush||!clear||!graph)return 1;
+      brush->triggerClick(); pump();
+      auto src=juce::Desktop::getInstance().getMainMouseSource();
+      const auto point=juce::Point<float>(graph->getWidth()*.55f,graph->getHeight()*.28f);
+      juce::MouseEvent down(src,point,juce::ModifierKeys::leftButtonModifier,0.f,0.f,0.f,0.f,0.f,graph,graph,juce::Time::getCurrentTime(),point,juce::Time::getCurrentTime(),1,false);
+      const auto outside=down.withNewPosition(juce::Point<float>{point.x,static_cast<float>(graph->getHeight()-2)});
+      graph->mouseDown(outside);graph->mouseUp(outside);
+      bool untouched=true;
+      for(const auto* id:SkellAudioProcessor::protectionIds)untouched&=p.parameters.getRawParameterValue(id)->load()==0.f;
+      check(untouched,"Diagnostic lane click does not paint");
+      graph->mouseDown(down); graph->mouseDrag(down.withNewPosition(juce::Point<float>{point.x+graph->getWidth()*.18f,point.y})); graph->mouseUp(down);
+      float peak=0.f;int changed=0;
+      for(const auto* id:SkellAudioProcessor::protectionIds){const float v=p.parameters.getRawParameterValue(id)->load();peak=std::max(peak,v);changed+=v>0.f?1:0;}
+      check(peak>40.f&&changed>=3,"Brush writes interpolated host nodes");
+      feed(p,65);capture("05_protection_brush.png");
+      clear->triggerClick();pump(); bool cleared=true;
+      for(const auto* id:SkellAudioProcessor::protectionIds)cleared&=p.parameters.getRawParameterValue(id)->load()==0.f;
+      check(cleared,"Clear resets all brush nodes");
+      brush->triggerClick();pump();
+      select->setSelectedId(15,juce::sendNotificationSync);pump();
+      value->setValue(70.,juce::sendNotificationSync);
+      check(p.parameters.getRawParameterValue("tempoRecovery")->load()>69.f,"Tempo control binding");
+      feed(p,20);check(p.getHostBpm()==0.f,"Tempo fallback without playhead");
+      struct TempoPlayhead final:juce::AudioPlayHead {
+        juce::Optional<PositionInfo> getPosition() const override {PositionInfo info;info.setBpm(120.);return info;}
+      } playhead;
+      p.setPlayHead(&playhead);feed(p,20);
+      check(p.getHostBpm()==120.f,"Host BPM delivered to engine");
+      capture("06_tempo_recovery.png");p.setPlayHead(nullptr);feed(p,20);
+      check(p.getHostBpm()==0.f,"Tempo cleared on playhead loss");
+      select->setSelectedId(12,juce::sendNotificationSync); pump();
+      ed->setSize(396,324); capture("07_smart_minimum.png");
+      ed->setSize(990,810); capture("08_smart_maximum.png");
+      ed->setSize(SkellAudioProcessorEditor::defaultWidth,SkellAudioProcessorEditor::defaultHeight);
+      p.setTheme(3); juce::MemoryBlock savedSkin; p.getStateInformation(savedSkin);
+      p.setTheme(1); pump();
+      p.setStateInformation(savedSkin.getData(),static_cast<int>(savedSkin.getSize())); pump(100);
+      check(select->findColour(juce::ComboBox::backgroundColourId)==juce::Colour(0xffdcd7c8),"Host-restored theme refreshes open Smart controls");
+      capture("09_clean_theme.png");
+      p.setTheme(0);pump();
+      const char* researchIds[]={"cleanKey","phaseProtect","stereoDetail"};
+      const char* researchNames[]={"10_clean_key.png","11_phase_protect.png","12_stereo_detail.png"};
+      for(int i=0;i<3;++i) {
+        select->setSelectedId(16+i,juce::sendNotificationSync);pump();
+        value->setValue(65.,juce::sendNotificationSync);
+        check(std::abs(p.parameters.getRawParameterValue(researchIds[i])->load()-65.f)<.2f,juce::String(researchIds[i])+" UI binding");
+        feed(p,30);capture(researchNames[i]);
+      }
+      for(int i=0;i<2;++i) {
+        const char* id=i==0?"humanEar":"componentProtect";
+        select->setSelectedId(11+i,juce::sendNotificationSync);pump();
+        value->setValue(70.,juce::sendNotificationSync);
+        check(std::abs(p.parameters.getRawParameterValue(id)->load()-70.f)<.2f,juce::String(id)+" UI binding");
+        feed(p,30);capture(i==0?"13_human_ear.png":"14_component_protect.png");
+      }
+    }
+    juce::DynamicObject::Ptr meta(new juce::DynamicObject());
+    meta->setProperty("revision",juce::String(argv[3]));
+    meta->setProperty("renderer","real SkellAudioProcessorEditor");
+    meta->setProperty("frame_count",full?14:4);
+    meta->setProperty("failures",failures);
+    meta->setProperty("width",ed->getWidth()*2); meta->setProperty("height",ed->getHeight()*2);
+    out.getChildFile("manifest.json").replaceWithText(juce::JSON::toString(juce::var(meta.get())));
+    return failures?1:0;
+  }
   const juce::File outDir(argc > 1 ? argv[1] : ".");
   outDir.createDirectory();
 
@@ -225,6 +332,50 @@ int main(int argc, char** argv) {
     lp.parameters.getParameter("listen")->setValueNotifyingHost(1.0f);
     for (int k = 0; k < 4; ++k) { fill(); lp.processBlock(b, mi); }
     check(std::abs(b.getSample(0, 4799)) < 0.01f, "Listen plays the filtered sidechain (DC removed by the high-pass)");
+  }
+  { // A host may disable the sidechain bus while Listen is active.
+    // Regression: changing bus layouts must crossfade rather than jump.
+    SkellAudioProcessor p; p.enableAllBuses();
+    p.setRateAndBufferSizeDetails(48000.0, 512); p.prepareToPlay(48000.0, 512);
+    p.parameters.getParameter("power")->setValueNotifyingHost(0.f);
+    p.parameters.getParameter("listen")->setValueNotifyingHost(1.f);
+    juce::MidiBuffer midi; juce::AudioBuffer<float> b(4, 512);
+    for (int block = 0; block < 14; ++block) {
+      for (int i = 0; i < 512; ++i) {
+        b.setSample(0,i,0.5f); b.setSample(1,i,0.5f);
+        b.setSample(2,i,-0.25f); b.setSample(3,i,-0.25f);
+      }
+      p.processBlock(b, midi);
+    }
+    const float previous = b.getSample(0, 511);
+    const bool changed = p.disableNonMainBuses();
+    juce::AudioBuffer<float> noKey(2, 1024);
+    noKey.clear();
+    for (int i = 0; i < 1024; ++i) {
+      noKey.setSample(0,i,0.5f); noKey.setSample(1,i,0.5f);
+    }
+    p.processBlock(noKey, midi);
+    const float first = noKey.getSample(0, 0);
+    float worst = std::abs(first - previous);
+    for (int i = 1; i < 1024; ++i)
+      worst = juce::jmax(worst, std::abs(noKey.getSample(0,i) - noKey.getSample(0,i-1)));
+    check(changed && std::abs(previous + 0.25f) < 1e-3f &&
+          worst < 0.012f && std::abs(noKey.getSample(0,1023) - 0.5f) < 1e-3f,
+          "Listen safely crossfades when host removes the sidechain bus (worst step "
+          + juce::String(worst,4) + ")");
+  }
+  // Additional actual JUCE screenshots at 125% and 150% display scaling.
+  {
+    proc.setTheme(1);
+    std::unique_ptr<juce::AudioProcessorEditor> dpi(proc.createEditor());
+    dpi->setSize(550,450); pump();
+    for (float factor : {1.25f,1.50f}) {
+      const auto img=dpi->createComponentSnapshot(dpi->getLocalBounds(),true,factor);
+      const juce::String name = factor < 1.3f ? "neon_dpi125" : "neon_dpi150";
+      check(!img.isNull() && img.getWidth() >= 550,
+            "real JUCE editor captures at " + name);
+      savePng(img,outDir.getChildFile(name+".png"));
+    }
   }
   // band slider: real mouse drag on the low thumb, then on the high thumb
   auto* band = find<juce::Slider>(*ed, [](juce::Slider& s) { return s.getSliderStyle() == juce::Slider::TwoValueHorizontal; });

@@ -1,0 +1,7 @@
+# Smart Space milestone 1
+Independent additive development, Classic default and existing automation IDs unchanged.
+- Smart Space master enables two-stage stereo main analysis, overlap-weighted target cuts and smoothed transition. Punch Protect, 808 Protection and Adaptive Release are additional percentages within Smart Space; all default off. Adaptive timing includes slower low-frequency attack and frequency-dependent release.
+- Delta Listen is dry minus post-guard wet with a 10 ms monitor transition; existing sidechain Listen takes precedence. No extra audio buffering.
+- Per-band overlap/protection and measured input/output power plus onset-weighted derivative energy exposed as audio-to-UI atomics. These are diagnostics, not a validated masking score, classification or perceptual meter. Native heatmap/meter and visible controls remain pending Quick4 inspection.
+- Next: independent vowel/consonant/sibilance detection, adaptive spectral width, perceptual weighting, harmonic protection, depth budgeting, separate spatial detection, protection brush, priority routing, reverse mode, tempo recovery. Compare with the authorized original Trackspacer and real aligned stems, not the archived recreation.
+- New host parameters version 3, missing-state defaults zero. No production merge or release. CI includes four-rate delta reconstruction and diagnostic smoke tests; listening, CPU, host and UI gates remain.

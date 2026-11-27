@@ -1,0 +1,13 @@
+# Spacer native Quick4
+The existing real JUCE editor audit has a separate four-scene mode. Use the verified offline kit JUCE 8.0.12, isolated Debian13 graphics/audio overlay, and the source ZIP from the exact PR checkout. Verify SHA256SUMS.txt and revision.txt; GitHub's PR checkout may be a merge commit. Do not label it as the branch head without checking.
+```sh
+source /path/to/cache/env.sh
+cmake -S . -B build-quick4 -G Ninja -DCMAKE_BUILD_TYPE=Release -DJUCE_PATH="$JUCE_PATH" -DFETCHCONTENT_FULLY_DISCONNECTED=ON -DSKELL_ENABLE_EDITOR_AUDIT=ON
+cmake --build build-quick4 --target SkellSpacerUIAudit --parallel 2
+xvfb-run -a build-quick4/SkellSpacerUIAudit_artefacts/Release/SkellSpacerUIAudit --quick4 /absolute/captures "$(cat /absolute/revision.txt)"
+```
+Capture Classic, Smart active controls, Delta active, supported alternate theme. Inspect every PNG and manifest; fix/rebuild/recapture. Do not use a generated mockup. Native UI and Windows verification pending until executed. Smart page and Delta are additive; original controls available when page is closed. Heatmap uses model overlap and protection, actual cut curve, modeled masking reduction and measured power/onset retention. No new DSP by opening page. Existing sidechain Listen has priority over Delta. Source export is not an automated screenshot workflow.
+
+## Local validation 2026-11-27
+Recovered the actual offline kit from Library metadata (not indexed search). JUCE 8.0.12 and all kit/dependency checksums passed. Exact source archive from run 46054929652 had merge tree ea5463afbf998e3bc57c89e2b75c327b2d839976, identical to branch 0de3ef2. CMake initially linked duplicate Linux GUI stubs; fix gates those stubs on the manual legacy harness only. Rebuilt on the same cache. Inspected the actual classic, active Smart, Delta, alternate theme, minimum and maximum size captures; improved explicit conflict/protection lanes, monitor labels, zero-cut formatting and scaling. Use --quick4-full for six scenes; default --quick4 still four. No claims about Windows until its exact new build passes.
+Cached auditory weights benchmarked at four sample rates, four active instances, 128-frame blocks, alternating order: 19.50%, 17.86%, 12.40%, 11.14% reduced processing time in local repeat, zero sample or overlap/protection error. Timing is environmental, not a DAW guarantee. Additional parity test is wired to CI. Original Trackspacer25 Windows x64 binary located in Library; no Windows host in local environment. Never commit the vendor binary. Synthetic two-way source hashes matched; nine Skell renders and 30 energy measurement rows produced, delta reconstruction max 3.73e-9. No original vendor wet renders and no real musical A/B claim.

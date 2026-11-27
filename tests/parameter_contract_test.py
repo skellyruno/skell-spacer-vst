@@ -19,4 +19,16 @@ assert 'BUNDLE_ID "audio.skell.spacer"' in cmake, "Bundle ID changed"
 assert re.search(r'p\.pan\s*=\s*pPan->load\(\)\s*\*\s*0\.01f\s*;', processor), (
     "Pan host-to-DSP conversion must divide by 100"
 )
-print(f"[PASS] V16 contract: {len(required)} parameters, no dead controls, VST3 identity")
+assert ids == required, f"unexpected changes to version-1 IDs: {ids ^ required}"
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*2\}', processor) == ["levelSensitivity"]
+assert re.search(r'p\.levelSensitivity\s*=\s*pLevelSensitivity->load\(\)\s*\*\s*0\.01f\s*;', processor)
+assert 'getChildWithProperty("id", "levelSensitivity")' in processor
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*3\}', processor) == ["smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen"]
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*4\}', processor) == ["spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget"]
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*5\}', processor) == ["sonicTerritory", "humanEar", "componentProtect", "foresight"]
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*6\}', processor) == ["tempoRecovery"]
+header=(root/"Source/PluginProcessor.h").read_text()
+assert re.findall(r'"(protect\d\d)"',header)==[f"protect{i:02d}" for i in range(21)]
+assert 'juce::ParameterID{protectionIds[i],6}' in processor
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*7\}', processor) == ["cleanKey", "phaseProtect", "stereoDetail"]
+print(f"[PASS] {len(required)} legacy parameters + 15 earlier additions + 22 version-6 + 3 version-7 parameters, VST3 identity")

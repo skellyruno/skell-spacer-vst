@@ -8,7 +8,7 @@
 #include <cstdio>
 #include <thread>
 
-#if ! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS
+#if defined(SKELL_LEGACY_UI_STUBS) && (! defined(JUCE_WINDOWS) || ! JUCE_WINDOWS)
 namespace juce {
 void privatePostSystemNotification(const String&, const String&) {}
 bool juce_handleXEmbedEvent(ComponentPeer*, void*) { return false; }
@@ -20,9 +20,77 @@ static int failures = 0;
 static void check(bool ok, const juce::String& what) { std::printf("[%s] %s\n", ok ? "PASS" : "FAIL", what.toRawUTF8()); if (!ok) ++failures; }
 static void pump(int ms = 30) { juce::MessageManager::getInstance()->runDispatchLoopUntil(ms); }
 
-int main() {
+int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI init;
   SkellAudioProcessor proc; proc.enableAllBuses(); proc.setRateAndBufferSizeDetails(48000.0, 256); proc.prepareToPlay(48000.0, 256);
+
+  // Model selection is internal state, not a new automation parameter.
+  {
+    juce::MemoryBlock fresh; proc.getStateInformation(fresh);
+    auto xml=juce::AudioProcessor::getXmlFromBinary(fresh.getData(),(int)fresh.getSize());
+    check(xml && xml->getIntAttribute("perceptionModelVersion")==2,"fresh instance uses refined perception");
+    if (!xml) return 1;
+    xml->removeAttribute("perceptionModelVersion");
+    juce::MemoryBlock old; juce::AudioProcessor::copyXmlToBinary(*xml,old);
+    proc.setStateInformation(old.getData(),(int)old.getSize());
+    juce::MemoryBlock restored; proc.getStateInformation(restored);
+    auto saved=juce::AudioProcessor::getXmlFromBinary(restored.getData(),(int)restored.getSize());
+    check(saved && saved->getIntAttribute("perceptionModelVersion")==1,"old project retains original perception model");
+    proc.setStateInformation(fresh.getData(),(int)fresh.getSize());
+    proc.getStateInformation(restored);
+    saved=juce::AudioProcessor::getXmlFromBinary(restored.getData(),(int)restored.getSize());
+    check(saved && saved->getIntAttribute("perceptionModelVersion")==2,"refined perception state round trips");
+  }
+
+  // Exercise exact APVTS save/restore, including old states in the same instance.
+  {
+    auto* sensitivity = proc.parameters.getParameter("levelSensitivity");
+    auto* amount = proc.parameters.getParameter("amount");
+    if (!sensitivity || !amount) return 1;
+    check(sensitivity->getValue() == 0.f, "default uses legacy detector");
+    amount->setValueNotifyingHost(0.37f);
+    sensitivity->setValueNotifyingHost(0.78f);
+    juce::MemoryBlock current; proc.getStateInformation(current);
+    auto tree = proc.parameters.copyState();
+    tree.removeChild(tree.getChildWithProperty("id", "levelSensitivity"), nullptr);
+    auto xml = tree.createXml();
+    if (!xml) return 1;
+    juce::MemoryBlock legacy; juce::AudioProcessor::copyXmlToBinary(*xml, legacy);
+    proc.setStateInformation(legacy.getData(), (int) legacy.getSize());
+    check(sensitivity->getValue() == 0.f, "old project resets sensitivity to legacy");
+    check(std::abs(amount->getValue() - 0.37f) < 0.002f, "legacy Amount preserved");
+    proc.setStateInformation(current.getData(), (int) current.getSize());
+    check(std::abs(sensitivity->getValue() - 0.78f) < 0.002f, "new state restores sensitivity");
+    sensitivity->setValueNotifyingHost(0.f);
+  }
+  // Every added parameter must survive current state recall and reset to
+  // zero when restoring a pre-Smart project into an already modified instance.
+  {
+    const char* added[] = {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight", "tempoRecovery", "protect00", "protect01", "protect02", "protect03", "protect04", "protect05", "protect06", "protect07", "protect08", "protect09", "protect10", "protect11", "protect12", "protect13", "protect14", "protect15", "protect16", "protect17", "protect18", "protect19", "protect20", "cleanKey", "phaseProtect", "stereoDetail"};
+    for (const auto* id : added) {
+      auto* p = proc.parameters.getParameter(id);
+      if (!p) return 1;
+      check(p->getValue() == 0.f, juce::String(id)+" defaults to Classic");
+      p->setValueNotifyingHost(1.f);
+    }
+    juce::MemoryBlock current; proc.getStateInformation(current);
+    auto legacyTree = proc.parameters.copyState();
+    for (const auto* id : added)
+      legacyTree.removeChild(legacyTree.getChildWithProperty("id", id), nullptr);
+    auto xml = legacyTree.createXml();
+    if (!xml) return 1;
+    juce::MemoryBlock legacy; juce::AudioProcessor::copyXmlToBinary(*xml, legacy);
+    proc.setStateInformation(legacy.getData(), (int) legacy.getSize());
+    for (const auto* id : added)
+      check(proc.parameters.getParameter(id)->getValue() == 0.f, juce::String(id)+" old state reset");
+    proc.setStateInformation(current.getData(), (int) current.getSize());
+    for (const auto* id : added) {
+      auto* p = proc.parameters.getParameter(id);
+      check(p->getValue() == 1.f, juce::String(id)+" current state recall");
+      p->setValueNotifyingHost(0.f);
+    }
+  }
+  if (argc > 1 && juce::String(argv[1]) == "--state-only") return failures ? 1 : 0;
 
   // ---- audio thread runs flat out while the message thread hammers parameters, buttons and editors
   std::atomic<bool> stop{ false }; std::atomic<long> blocks{ 0 }; std::atomic<bool> bad{ false };

@@ -52,15 +52,15 @@ inline void drawText(juce::Graphics& g, const juce::String& text, juce::Rectangl
 inline void drawCard(juce::Graphics& g, juce::Rectangle<float> r) {
   g.setColour(kPanel); g.fillRect(r);
   g.setColour(kLine);  g.drawRect(r, 1.0f);
-  const float L = 9.0f;
-  g.setColour(kBoneDim.withAlpha(0.75f));
+  const float L = 5.0f;
+  g.setColour(kBoneDim.withAlpha(0.32f));
   const auto a = r.getTopLeft(), b = r.getTopRight(), c = r.getBottomLeft(), d = r.getBottomRight();
   juce::Path p;
   p.startNewSubPath(a.x, a.y + L); p.lineTo(a.x, a.y); p.lineTo(a.x + L, a.y);
   p.startNewSubPath(b.x - L, b.y); p.lineTo(b.x, b.y); p.lineTo(b.x, b.y + L);
   p.startNewSubPath(c.x, c.y - L); p.lineTo(c.x, c.y); p.lineTo(c.x + L, c.y);
   p.startNewSubPath(d.x - L, d.y); p.lineTo(d.x, d.y); p.lineTo(d.x, d.y - L);
-  g.strokePath(p, juce::PathStrokeType(1.4f));
+  g.strokePath(p, juce::PathStrokeType(1.0f));
 }
 
 // Skeleton spacer mark, about 74 x 30 units: a skull and a spine whose vertebrae
