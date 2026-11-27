@@ -105,6 +105,11 @@ int main(int argc, char** argv) {
       auto src=juce::Desktop::getInstance().getMainMouseSource();
       const auto point=juce::Point<float>(graph->getWidth()*.55f,graph->getHeight()*.28f);
       juce::MouseEvent down(src,point,juce::ModifierKeys::leftButtonModifier,0.f,0.f,0.f,0.f,0.f,graph,graph,juce::Time::getCurrentTime(),point,juce::Time::getCurrentTime(),1,false);
+      const auto outside=down.withNewPosition(juce::Point<float>{point.x,static_cast<float>(graph->getHeight()-2)});
+      graph->mouseDown(outside);graph->mouseUp(outside);
+      bool untouched=true;
+      for(const auto* id:SkellAudioProcessor::protectionIds)untouched&=p.parameters.getRawParameterValue(id)->load()==0.f;
+      check(untouched,"Diagnostic lane click does not paint");
       graph->mouseDown(down); graph->mouseDrag(down.withNewPosition(juce::Point<float>{point.x+graph->getWidth()*.18f,point.y})); graph->mouseUp(down);
       float peak=0.f;int changed=0;
       for(const auto* id:SkellAudioProcessor::protectionIds){const float v=p.parameters.getRawParameterValue(id)->load();peak=std::max(peak,v);changed+=v>0.f?1:0;}
@@ -129,11 +134,16 @@ int main(int argc, char** argv) {
       ed->setSize(396,324); capture("07_smart_minimum.png");
       ed->setSize(990,810); capture("08_smart_maximum.png");
       ed->setSize(SkellAudioProcessorEditor::defaultWidth,SkellAudioProcessorEditor::defaultHeight);
+      p.setTheme(3); juce::MemoryBlock savedSkin; p.getStateInformation(savedSkin);
+      p.setTheme(1); pump();
+      p.setStateInformation(savedSkin.getData(),static_cast<int>(savedSkin.getSize())); pump(100);
+      check(select->findColour(juce::ComboBox::backgroundColourId)==juce::Colour(0xffdcd7c8),"Host-restored theme refreshes open Smart controls");
+      capture("09_clean_theme.png");
     }
     juce::DynamicObject::Ptr meta(new juce::DynamicObject());
     meta->setProperty("revision",juce::String(argv[3]));
     meta->setProperty("renderer","real SkellAudioProcessorEditor");
-    meta->setProperty("frame_count",full?8:4);
+    meta->setProperty("frame_count",full?9:4);
     meta->setProperty("failures",failures);
     meta->setProperty("width",ed->getWidth()*2); meta->setProperty("height",ed->getHeight()*2);
     out.getChildFile("manifest.json").replaceWithText(juce::JSON::toString(juce::var(meta.get())));

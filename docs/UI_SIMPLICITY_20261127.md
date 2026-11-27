@@ -1,0 +1,5 @@
+# UI simplicity pass
+
+Preserve the existing layout, bounds, themes, controls, state schema and DSP. No parameter IDs added or removed. Reduce decorative corner emphasis, knob tick count, graph glow and legend weight; improve status labels, rounded diagnostic percentages, and distinguish conflict/protection/cut with separate colors. Display host tempo only when editing Tempo Recovery. Hide unavailable modeled unmask and bypassed diagnostics. Prevent accidental brush painting when a gesture starts outside the actual plot. Refresh the open editor on theme restoration, and synchronize graph theme on independent repaint.
+
+Verified locally using the existing JUCE 8.0.12 offline cache: real editor compile, first nine-scene capture, inspect, correct numeric formatting and tempo status, rebuild and recapture nine scenes including actual state restore, min/max, and brush interaction. No new DSP changes in this pass. Full Windows exact-head validation and original-reference musical A/B remain independent gates.
