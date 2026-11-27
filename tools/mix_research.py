@@ -10,6 +10,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import numpy as np
+from listening_loudness import match
 import soundfile as sf
 from scipy.signal import stft, istft
 
@@ -150,15 +151,13 @@ def research(exe, main, key, rate, out, oracle=None, separator=None):
     target=max(0.,results['smart']['conflict_reduction']*.90)
     choice, validation=select_held_out(main,key,audio,candidates)
     # Private listening files: add the same key at the same alignment. Use
-    # matched RMS and one common headroom scalar, not independent clipping.
+    # gated integrated loudness and common headroom, not independent clipping.
     mixkey=oracle if oracle is not None else key
     chosen=list(dict.fromkeys(['classic','smart','clean','phase','stereo','combined',choice or 'smart','invisible_steer']+(['direct_key_oracle'] if oracle is not None else [])+(['separator_key'] if separator is not None else [])))
     mix={n:audio[n]+mixkey for n in chosen}
-    target_rms=np.sqrt(energy(mix['smart']))
-    gains={n:target_rms/max(np.sqrt(energy(x)),1e-12) for n,x in mix.items()}
-    headroom=min(1.,.95/max(float(np.max(np.abs(x)))*gains[n] for n,x in mix.items()))
-    for n,x in mix.items():
-        sf.write(out/f'{n}_mix.wav',x*gains[n]*headroom,rate,subtype='FLOAT')
+    matched, loudness=match(mix,rate)
+    for n,x in matched.items():
+        sf.write(out/f'{n}_mix.wav',x,rate,subtype='FLOAT')
         sf.write(out/f'{n}_bed.wav',audio[n],rate,subtype='FLOAT')
     sf.write(out/'source_bed.wav',main,rate,subtype='FLOAT');sf.write(out/'source_key.wav',key,rate,subtype='FLOAT')
     sf.write(out/'listen_key.wav',mixkey,rate,subtype='FLOAT')
@@ -166,7 +165,7 @@ def research(exe, main, key, rate, out, oracle=None, separator=None):
             'settings_order':['amount','smart','cleanKey','phaseProtect','stereoDetail'],
             'assistant_recommendation':choice,'minimum_conflict_reduction':target,'steering_strength':strength,
             'assistant_validation':validation,
-            'listening_rms_gains':{n:float(g*headroom) for n,g in gains.items()},'results':results}
+            'listening_loudness':loudness,'results':results}
     report['source_sha256']={n:hashlib.sha256((out/n).read_bytes()).hexdigest() for n in ('source_bed.wav','source_key.wav','listen_key.wav')}
     (out/'report.json').write_text(json.dumps(report,indent=2))
     return report

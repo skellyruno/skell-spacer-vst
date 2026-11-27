@@ -48,3 +48,20 @@ with tempfile.TemporaryDirectory() as td:
     else:
         raise AssertionError('shifted bypass accepted')
 print('PASS: reference bypass identity and offset rejection')
+
+# Verify K-weighted matching (not merely RMS), common headroom and rejection.
+from listening_loudness import match
+low=.3*np.sin(2*np.pi*80*t); high=.3*np.sin(2*np.pi*3000*t)
+lo=np.column_stack((low,low)).astype(np.float32)
+hi=np.column_stack((high,high)).astype(np.float32)
+matched,report=match({'smart':lo,'high':hi},fs)
+assert abs(report['before_lufs']['smart']-report['before_lufs']['high'])>2.
+assert report['spread_lu']<=.10
+assert max(report['estimated_4x_peak_db'].values())<=-.999
+try:
+    match({'smart':lo,'silent':np.zeros_like(lo)},fs)
+except ValueError:
+    pass
+else:
+    raise AssertionError('silent candidate accepted')
+print('PASS: gated LUFS matching, oversampled peak ceiling, silence rejection')

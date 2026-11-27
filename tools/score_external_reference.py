@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import numpy as np
 import soundfile as sf
+from listening_loudness import match
 from mix_research import read, aligned, energy, conflict, conflict_weights, db_ratio
 
 
@@ -43,14 +44,12 @@ def score(case, wet_path, metadata, bypass_path=None):
             'conflict_reduction':1-conflict(wet,w)/before,'energy_retention':energy(wet)/energy(bed),
             'peak_dbfs':db_ratio(float(np.max(np.abs(wet)))**2,1.),'frames':len(wet),'rate':rate,'offset_samples':0,
             'alignment':alignment}
-    # RMS-match reference and Smart from their unnormalized bed signals,
-    # adding exactly the same direct listening key; one common headroom gain.
+    # Match the same summed listening route with gated integrated loudness.
     smart=aligned(case/'smart_bed.wav',bed.shape,rate)+vocal
-    reference=wet+vocal;gain=np.sqrt(energy(smart)/max(energy(reference),1e-12))
-    headroom=min(1.,.95/max(float(np.max(np.abs(smart))),float(np.max(np.abs(reference)))*gain))
-    sf.write(case/'reference_matched_mix.wav',reference*gain*headroom,rate,subtype='FLOAT')
-    sf.write(case/'smart_reference_matched_mix.wav',smart*headroom,rate,subtype='FLOAT')
-    result['rms_match_gain']=float(gain);result['common_headroom']=float(headroom)
+    matched,loudness=match({'smart':smart,'reference':wet+vocal},rate)
+    sf.write(case/'reference_matched_mix.wav',matched['reference'],rate,subtype='FLOAT')
+    sf.write(case/'smart_reference_matched_mix.wav',matched['smart'],rate,subtype='FLOAT')
+    result['listening_loudness']=loudness
     (case/'external_reference_score.json').write_text(json.dumps(result,indent=2))
     return result
 

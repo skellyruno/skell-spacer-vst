@@ -52,7 +52,20 @@ jobs:
           g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I immediate-parent tests/smart_efficiency_test.cpp -o current_parity
           ./current_parity | tee quality-artifacts/immediate-parent-parity.txt
           g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tools/render_research.cpp -o render_research
-          python3 -m py_compile tools/mix_research.py tools/score_external_reference.py tests/research_tools_test.py
+          python3 -m py_compile tools/listening_loudness.py tools/mix_research.py tools/score_external_reference.py tests/research_tools_test.py
+      - name: Bus reconnect and reset regression, cached-control parity
+        run: |
+          mkdir -p bus-parent/prior_smart quality-artifacts
+          set -o pipefail
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve KeyIntelligence; do
+            git show 5b19b800de7c1590fcccbf1e48f1f563ac824f48:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > bus-parent/prior_smart/$h.h
+          done
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I bus-parent tests/bus_reset_test.cpp -o bus_reset_test
+          ./bus_reset_test | tee quality-artifacts/bus-reset.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I bus-parent tests/bus_reset_test.cpp -o bus_reset_san
+          ./bus_reset_san
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I bus-parent tests/smart_efficiency_test.cpp -o bus_parent_parity
+          ./bus_parent_parity | tee quality-artifacts/bus-parent-parity.txt
       - name: Quiet phrase recovery, phase ceiling and main-detector parity
         run: |
           mkdir -p latest-parent/prior_smart unlinked_main quality-artifacts

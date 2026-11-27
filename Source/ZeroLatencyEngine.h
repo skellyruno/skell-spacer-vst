@@ -104,6 +104,11 @@ public:
       const float tau = std::max(0.004f, 2.5f / fc[i]);
       anaPowCoef[i] = 1.0f - std::exp(-1.0f / ((float)fs * tau));
       fastPowCoef[i] = DetectorResponse::fastCoefficient(fs, fc[i]);
+      // Frequency-only geometry is invariant until prepare(). Keep the
+      // original float expressions and ordering for sample parity.
+      lowProtect[i]=1.f-smoothstep((fc[i]-55.f)/125.f);
+      perceptualWeight[i]=SpectralIntelligence::perceptual(fc[i]);
+      vocalHigh[i]=SpectralIntelligence::ramp((fc[i]-3500.f)/4500.f);
       density[i] = 1000.0f / fc[i];                 // 1 / bandwidth: every band is 1/8 octave wide in Hz
     }
     cacheSpreadSums();
@@ -177,6 +182,8 @@ public:
     for (auto& count : activeCount) count = 0;
     stepCount = 0; mix = 0.f; anyActive = false; guardPk = 0.f; guardGain = 1.f;
     phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
+    // A reset is a fresh stream, not a continuation of its old bus/domain.
+    lastMainChannels=lastKeyChannels=0; hadSc=false; msApplied=false;
     for (int i = 0; i < kDispN; ++i) {
       dispTrack[i].store(0.f, std::memory_order_relaxed);
       dispSc[i].store(0.f, std::memory_order_relaxed);
@@ -252,6 +259,11 @@ public:
       // must start from silence, exactly as in the independent-bank path.
       if(lastMainChannels!=0) mainLinked=false;
       prevIn[1] = prevOut[1] = 0.f;
+      // Removed audio channels must never resurrect old IIR states or active
+      // indices before the first control tick of a newly negotiated layout.
+      for(auto& b:bell[1]) b=Bell();
+      std::fill(applied[1],applied[1]+kBands,0.f);
+      activeCount[1]=0;
       lastMainChannels = nCh;
     }
     for (int c = 0; c < nCh; ++c) if (!main[c]) return;
@@ -267,6 +279,12 @@ public:
       phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
     }
     if (nSc > 0) hadSc = true;
+    if (lastKeyChannels != nSc) {
+      // A newly connected right key channel begins from silence. Left history
+      // remains continuous; the existing envelope releases naturally.
+      for(auto& f:scHp[1]) f.ic1=f.ic2=0.f;
+      for(auto& f:scLp[1]) f.ic1=f.ic2=0.f;
+    }
     if (lastKeyChannels != nSc ||
         (params.sonicTerritory==0.f && focusBlend[5]==0.f)) {
       keyEnergy[0] = keyEnergy[1] = 0.f;
@@ -739,6 +757,13 @@ private:
       }
       highFraction = highEnergy / std::max(highEnergy + midEnergy, 1e-18f);
     }
+    const float vocalEnergyWeight=SpectralIntelligence::ramp((highFraction-.25f)/.55f);
+    const float punch=params.punchProtect*onset*0.80f;
+    const float timing=smartBlend*params.adaptiveRelease;
+    float manualProtect[kBands] = {};
+    if(brushActive&&smartBlend>0.f)
+      for(int i=0;i<nb;++i)
+        manualProtect[i]=smartBlend*ProtectionCurve::at(brushBlend,(static_cast<float>(i)+.5f)/static_cast<float>(kBandsPerOct));
     {
       float ps[kBands], curPeak = 0.f;
       for (int i = 0; i < nb; ++i) {
@@ -788,8 +813,7 @@ private:
           // not trigger unnecessary cuts; a broadband bed remains eligible.
           const float occupancy = smoothstep((m * density[i]) / std::max(0.025f * mainPeak, 1e-10f));
           const float conflict = occupancy * legacy;
-          const float low = 1.f - smoothstep((fc[i] - 55.f) / 125.f);
-          const float punch = params.punchProtect * onset * 0.80f;
+          const float low = lowProtect[i];
           const float bass = params.bassProtect * low * (1.f - 0.75f * conflict);
           const float keep = (1.f - punch) * (1.f - bass);
           float extra = 1.f;
@@ -798,12 +822,14 @@ private:
             const auto mainPower = [&](int b) {
               return mainAnaPow[0][b] + (nCh > 1 ? mainRight[b] : mainAnaPow[0][b]);
             };
-            const float neighborPower = .5f*(mainPower(std::max(0,i-2)) + mainPower(std::min(nb-1,i+2)));
             const float rawKey = 2.f*powers[i];
             if (focusBlend[0] > 0.f) extra *= SI::blend(focusBlend[0], SI::narrow(rawKey, ps[i]));
-            if (focusBlend[1] > 0.f) extra *= SI::blend(focusBlend[1], SI::vocal(fc[i], highFraction));
-            if (focusBlend[2] > 0.f) extra *= SI::blend(focusBlend[2], SI::perceptual(fc[i]));
-            if (focusBlend[3] > 0.f) extra *= SI::blend(focusBlend[3], SI::harmonic(m, neighborPower, conflict));
+            if (focusBlend[1] > 0.f) extra *= SI::blend(focusBlend[1], 1.f-.65f*vocalHigh[i]*vocalEnergyWeight);
+            if (focusBlend[2] > 0.f) extra *= SI::blend(focusBlend[2], perceptualWeight[i]);
+            if (focusBlend[3] > 0.f) {
+              const float neighborPower=.5f*(mainPower(std::max(0,i-2))+mainPower(std::min(nb-1,i+2)));
+              extra *= SI::blend(focusBlend[3], SI::harmonic(m, neighborPower, conflict));
+            }
             if (focusBlend[4] > 0.f) extra *= SI::blend(focusBlend[4], SI::budget(m, rawKey));
           }
           if (focusBlend[6] > 0.f) {
@@ -844,13 +870,12 @@ private:
           // More rapid recovery when the key fades or an instrumental onset
           // needs protection; bass recovers less aggressively than upper bands.
           if (tempoBlend>0.f) rc+=(tempoCurrent-rc)*tempoBlend*smartBlend;
-          const float timing = smartBlend * params.adaptiveRelease;
           const float recovery = timing * (1.f - legacy) * (0.35f + 0.65f * (1.f - low));
           rc += (rc*rc*rc - rc) * std::max(recovery, smartBlend * punch);
           ac += (1.f - ac) * timing * low * 0.35f;
           diagOverlap[i].store(conflict, std::memory_order_relaxed);
           const float automaticProtection=smartBlend*(1.f-keep*extra);
-          const float manualProtection=brushActive?smartBlend*ProtectionCurve::at(brushBlend,(static_cast<float>(i)+.5f)/static_cast<float>(kBandsPerOct)):0.f;
+          const float manualProtection=manualProtect[i];
           diagProtection[i].store(manualProtection>0.f?1.f-(1.f-automaticProtection)*(1.f-manualProtection):automaticProtection,std::memory_order_relaxed);
         }
         if (!params.freeze) {
@@ -879,7 +904,7 @@ private:
       // Manual protection is independent of the dynamic release envelope.
       // The brush's own 50ms ramp protects painted bands even with a long release.
       if(brushActive&&smartBlend>0.f)
-        req[i]*=1.f-smartBlend*ProtectionCurve::at(brushBlend,(static_cast<float>(i)+.5f)/static_cast<float>(kBandsPerOct));
+        req[i]*=1.f-manualProtect[i];
       // A nonzero warm start must decay through the original solver.
       needsSolve |= req[i] != 0.f || solved[i] != 0.f;
     }
@@ -918,9 +943,13 @@ private:
           // two spatial reductions are not multiplied at full detail.
           cut=cut+(cut0[i]*w[c]*local-cut)*detailMix;
         }
+        const bool sameCut=b.on&&cut==applied[c][i];
         applied[c][i] = cut < 0.003f ? 0.f : cut;
         if (cut < 0.003f) { if (b.on) { b.on = false; b.ic1 = b.ic2 = 0.f; } continue; }
-        if (c == 1 && cut == applied[0][i]) {
+        if (sameCut) {
+          // Coefficients depend only on the prepared geometry and this cut.
+          // Freeze and settled bands need no redundant recalculation.
+        } else if (c == 1 && cut == applied[0][i]) {
           // Copy identical coefficients, never the independent filter state.
           const Bell& left = bell[0][i];
           b.a1 = left.a1; b.a2 = left.a2; b.a3 = left.a3;
@@ -1059,6 +1088,7 @@ private:
   float phaseEnergyCoef = 0.001f, phaseBlendCoef = 0.001f;
   bool msApplied = false, bandDirty = true, anyActive = false, hadSc = false;
   float fc[kBands] = {}, bandWeight[kBands] = {}, bellG[kBands] = {};
+  float lowProtect[kBands]={},perceptualWeight[kBands]={},vocalHigh[kBands]={};
   float earWeight[kBands][17] = {}, earSum[kBands] = {};
   int earLo[kBands] = {}, earHi[kBands] = {};
   float kernC[kBands][2 * kReach + 1] = {}, kernM[kBands][2 * kReach + 1] = {}, solved[kBands] = {}, lsStep = 0.f;
