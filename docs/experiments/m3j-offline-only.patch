@@ -1,0 +1,54 @@
+--- a/Source/ZeroLatencyEngine.h
++++ b/Source/ZeroLatencyEngine.h
+@@ -78,6 +78,8 @@
+     cleanHistoryCoef=1.f-std::exp(-stepSec/.045f);
+     cleanHoldDecay=std::exp(-stepSec/.180f);
+     componentCoef=1.f-std::exp(-stepSec/.080f);
++    fluxFastCoef=1.f-static_cast<float>(std::exp(-1.0/(.0015*fs)));
++    fluxSlowCoef=1.f-static_cast<float>(std::exp(-1.0/(.045*fs)));
+     onsetFastCoef = (float)(1.0 - std::exp(-1.0 / (0.003 * fs)));
+     onsetSlowCoef = (float)(1.0 - std::exp(-1.0 / (0.060 * fs)));
+     meterCoef = (float)(1.0 - std::exp(-1.0 / (0.250 * fs)));
+@@ -388,6 +390,15 @@
+       // so it costs no delay and does nothing at all (bit-exact) unless an overshoot really happens.
+       guardPk = std::max(std::max(std::fabs(x0), std::fabs(x1)), guardPk * guardDecay);
+       if (guardPk < 1.0e-20f) guardPk = 0.f;        // below -400 dBFS: silence (and keeps the follower out of denormals)
++      if(params.refinedPerception&&smartBlend>0.f&&focusBlend[7]>0.f&&!params.freeze) {
++        const float dx0=DetectorResponse::safeKey(x0)-prevIn[0],dx1=DetectorResponse::safeKey(x1)-prevIn[1];
++        const float derivative=dx0*dx0+dx1*dx1;
++        fluxFast+=fluxFastCoef*(derivative-fluxFast); fluxSlow+=fluxSlowCoef*(derivative-fluxSlow);
++        if(fluxFast<1e-20f)fluxFast=0.f;
++        if(fluxSlow<1e-20f)fluxSlow=0.f;
++        const float transientMix=0.80f*smartBlend*focusBlend[7]*smoothstep((fluxFast-1.2f*fluxSlow)/std::max(fluxFast,1e-10f));
++        if(transientMix>0.f) {y0 += (x0-y0)*transientMix; y1 += (x1-y1)*transientMix;}
++      }
+       if (phaseMix>0.f) {
+         const float allowed=std::min(KeyIntelligence::safeWet(x0,y0,guardPk),KeyIntelligence::safeWet(x1,y1,guardPk));
+         // Immediate reduction for the ceiling, but restore the wet path
+@@ -554,6 +565,7 @@
+     std::memset(mainAnaS, 0, sizeof mainAnaS);
+     std::memset(mainAnaPow, 0, sizeof mainAnaPow);
+     mainLinked=true;
++    fluxFast=fluxSlow=0.f;
+     onsetFast = onsetSlow = meterIn = meterOut = meterOnsetIn = meterOnsetOut = 0.f;
+     prevIn[0] = prevIn[1] = prevOut[0] = prevOut[1] = 0.f;
+   }
+@@ -858,7 +870,9 @@
+                 neighborKey += maskOut[i][index]*2.f*powers[j];
+                 neighborMain += maskIn[i][index]*(mainAnaPow[0][j]+(nCh>1?mainRight[j]:mainAnaPow[0][j]));
+               }
+-              extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::maskingNeed(m,2.f*powers[i],neighborMain/maskInSum[i],neighborKey/maskOutSum[i]));
++              const float target=2.f*powers[i]+.35f*neighborKey/maskOutSum[i];
++              const float salience=0.50f+0.50f*MixIntelligence::ramp(std::sqrt(std::clamp(target*density[i]/std::max(curPeak,1e-18f),0.f,1.f)));
++              extra *= SpectralIntelligence::blend(focusBlend[6],salience*MixIntelligence::maskingNeed(m,2.f*powers[i],neighborMain/maskInSum[i],neighborKey/maskOutSum[i]));
+             } else {
+               float neighbors=0.f;
+               for (int j=earLo[i];j<=earHi[i];++j) {
+@@ -1110,6 +1124,7 @@
+   std::atomic<float> diagConflictBefore{0.f}, diagConflictAfter{0.f};
+   float onsetFastCoef = 0.f, onsetSlowCoef = 0.f, meterCoef = 0.f;
+   float onsetFast = 0.f, onsetSlow = 0.f;
++  float fluxFast=0.f,fluxSlow=0.f,fluxFastCoef=0.f,fluxSlowCoef=0.f;
+   float mainAnaS[kMaxCh][4][kBands] = {}, mainAnaPow[kMaxCh][kBands] = {};
+   float meterIn = 0.f, meterOut = 0.f, meterOnsetIn = 0.f, meterOnsetOut = 0.f;
+   float prevIn[2] = {}, prevOut[2] = {};
