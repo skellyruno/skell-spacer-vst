@@ -77,6 +77,10 @@ jobs:
         run: |
           g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/spectral_intelligence_test.cpp -o spectral_intelligence_test
           ./spectral_intelligence_test
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/protection_tempo_test.cpp -o protection_tempo_test
+          ./protection_tempo_test
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/protection_tempo_test.cpp -o protection_tempo_san
+          ./protection_tempo_san
           g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/mix_intelligence_test.cpp -o mix_intelligence_test
           ./mix_intelligence_test
           g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source tests/mix_intelligence_test.cpp -o mix_intelligence_san

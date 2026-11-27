@@ -153,6 +153,7 @@ public:
     clearSmart();
     smartBlend = deltaMix = 0.f;
     std::fill(focusBlend, focusBlend + 9, 0.f);
+    brushBlend.fill(0.f); tempoBlend=0.f; tempoCurrent=releaseCoef;
     diagConflictBefore.store(0.f); diagConflictAfter.store(0.f);
     diagInput.store(0.f); diagOutput.store(0.f);
     diagOnsetIn.store(0.f); diagOnsetOut.store(0.f);
@@ -199,6 +200,9 @@ public:
     p.humanEar = fin(p.humanEar, 0.f, 1.f, 0.f);
     p.componentProtect = fin(p.componentProtect, 0.f, 1.f, 0.f);
     p.foresight = fin(p.foresight, 0.f, 1.f, 0.f);
+    p.tempoRecovery=fin(p.tempoRecovery,0.f,1.f,0.f);
+    p.hostBpm=std::isfinite(p.hostBpm)&&p.hostBpm>=20.f&&p.hostBpm<=400.f?p.hostBpm:0.f;
+    for(auto& v:p.protect) v=ProtectionCurve::safe(v);
     p.pan = fin(p.pan, -1.f, 1.f, 0.f);
     p.attackMs = fin(p.attackMs, 1.f, 200.f, 10.f);
     p.releaseMs = fin(p.releaseMs, 5.f, 2000.f, 150.f);
@@ -216,7 +220,7 @@ public:
     }
     if (p.lowHz != params.lowHz || p.highHz != params.highHz) bandDirty = true;
     const bool scChanged = p.scLowHz != params.scLowHz || p.scHighHz != params.scHighHz;
-    const bool timeChanged = p.attackMs != params.attackMs || p.releaseMs != params.releaseMs;
+    const bool timeChanged = p.attackMs != params.attackMs || p.releaseMs != params.releaseMs || p.hostBpm != params.hostBpm;
     const bool spreadChanged = p.smooth != params.smooth;
     params = p;
     if (timeChanged) updateTimeConstants();
@@ -562,6 +566,8 @@ private:
   void updateTimeConstants() {
     attackCoef = std::exp(-stepSec / std::max(0.001f, params.attackMs * 0.001f));
     releaseCoef = std::exp(-stepSec / std::max(0.005f, params.releaseMs * 0.001f));
+    const float synced=ProtectionCurve::syncedMs(params.releaseMs,params.hostBpm);
+    tempoTarget=std::exp(-stepSec/std::max(.005f,synced*.001f));
     peakDecayCoef = std::exp(-stepSec / 2.0f);
   }
   void updateSpread() {
@@ -589,6 +595,17 @@ private:
         diagOverlap[i].store(0.f, std::memory_order_relaxed);
         diagProtection[i].store(0.f, std::memory_order_relaxed);
       }
+    }
+    // Smooth automation at the control cadence; Classic never uses these.
+    const float tempoGoal=params.hostBpm>0.f?params.tempoRecovery:0.f;
+    tempoBlend=tempoGoal>tempoBlend?std::min(tempoGoal,tempoBlend+smartStep):std::max(tempoGoal,tempoBlend-smartStep);
+    tempoCurrent+=smartStep*(tempoTarget-tempoCurrent);
+    bool brushActive=false;
+    for(int j=0;j<ProtectionCurve::count;++j) {
+      auto& b=brushBlend[static_cast<size_t>(j)];
+      const float goal=params.protect[static_cast<size_t>(j)];
+      b=goal>b?std::min(goal,b+smartStep):std::max(goal,b-smartStep);
+      brushActive|=b>0.f;
     }
     float mainPeak = 0.f;
     if (smartBlend > 0.f) {
@@ -700,10 +717,13 @@ private:
           // Always track while Smart is active to avoid a cold history on automation.
           keyHistory[i] += trendCoef*(2.f*anaPow[i]-keyHistory[i]);
           if (keyHistory[i]<1e-20f) keyHistory[i]=0.f;
+          if (brushActive)
+            extra *= 1.f-ProtectionCurve::at(brushBlend,(static_cast<float>(i)+.5f)/static_cast<float>(kBandsPerOct));
           const float factor = occupancy * keep * extra;
           t *= 1.f + smartBlend * (factor - 1.f);
           // More rapid recovery when the key fades or an instrumental onset
           // needs protection; bass recovers less aggressively than upper bands.
+          if (tempoBlend>0.f) rc+=(tempoCurrent-rc)*tempoBlend*smartBlend;
           const float timing = smartBlend * params.adaptiveRelease;
           const float recovery = timing * (1.f - legacy) * (0.35f + 0.65f * (1.f - low));
           rc += (rc*rc*rc - rc) * std::max(recovery, smartBlend * punch);
@@ -882,6 +902,8 @@ private:
   LevelSensitivity sensitivity;
   float smartBlend = 0.f, smartStep = 0.f, deltaMix = 0.f;
   float focusBlend[9] = {}, keyHistory[kBands] = {}, keyEnergy[2] = {}, trendCoef=0.f;
+  ProtectionCurve::Nodes brushBlend{};
+  float tempoBlend=0.f, tempoCurrent=0.f, tempoTarget=0.f;
   int lastKeyChannels=0;
   int lastMainChannels = 0;
   std::atomic<float> diagConflictBefore{0.f}, diagConflictAfter{0.f};

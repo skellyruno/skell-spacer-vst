@@ -26,4 +26,8 @@ assert 'getChildWithProperty("id", "levelSensitivity")' in processor
 assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*3\}', processor) == ["smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen"]
 assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*4\}', processor) == ["spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget"]
 assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*5\}', processor) == ["sonicTerritory", "humanEar", "componentProtect", "foresight"]
-print(f"[PASS] V16 contract: {len(required)} legacy parameters + 1 version-2 + 5 version-3 + 5 version-4 + 4 version-5 parameters, VST3 identity")
+assert re.findall(r'juce::ParameterID\{"([^"]+)",\s*6\}', processor) == ["tempoRecovery"]
+header=(root/"Source/PluginProcessor.h").read_text()
+assert re.findall(r'"(protect\d\d)"',header)==[f"protect{i:02d}" for i in range(21)]
+assert 'juce::ParameterID{protectionIds[i],6}' in processor
+print(f"[PASS] {len(required)} legacy parameters + 15 earlier additions + 22 version-6 parameters, VST3 identity")

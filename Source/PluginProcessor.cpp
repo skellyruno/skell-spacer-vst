@@ -52,6 +52,8 @@ SkellAudioProcessor::SkellAudioProcessor()
   pEar = parameters.getRawParameterValue("humanEar");
   pComponent = parameters.getRawParameterValue("componentProtect");
   pForesight = parameters.getRawParameterValue("foresight");
+  pTempo=parameters.getRawParameterValue("tempoRecovery");
+  for(size_t i=0;i<pProtect.size();++i) pProtect[i]=parameters.getRawParameterValue(protectionIds[i]);
   setLatencySamples(0);
 }
 
@@ -124,6 +126,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout SkellAudioProcessor::createL
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"humanEar", 5}, "Human Ear", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"componentProtect", 5}, "Component Protect", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
   layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"foresight", 5}, "Musical Foresight", juce::NormalisableRange<float>(0.f, 100.f, 0.1f), 0.f, AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{"tempoRecovery", 6}, "Tempo Recovery", juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  for(int i=0;i<skell::ProtectionCurve::count;++i) {
+    const auto name="Protect "+freqText(20.f*std::exp2(.5f*static_cast<float>(i)));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID{protectionIds[i],6},name,juce::NormalisableRange<float>(0.f,100.f,.1f),0.f,AudioParameterFloatAttributes().withStringFromValueFunction(pct)));
+  }
   return layout;
 }
 
@@ -131,6 +138,7 @@ void SkellAudioProcessor::prepareToPlay(double sampleRate, int) {
   engine.prepare(sampleRate);
   sampleRateHz.store(sampleRate);
   sidechainHold = 0;
+  hostBpm.store(0.f,std::memory_order_relaxed);
   sidechainActive.store(false);
   listenMix = 0.f;
   lastMonitor = 0.f;
@@ -181,6 +189,13 @@ void SkellAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::M
   p.humanEar = pEar->load() * 0.01f;
   p.componentProtect = pComponent->load() * 0.01f;
   p.foresight = pForesight->load() * 0.01f;
+  p.tempoRecovery=pTempo->load(std::memory_order_relaxed)*.01f;
+  // No assumed BPM. Tempo is optional and only read when the control is active.
+  if(p.tempoRecovery>0.f) if(auto* playhead=getPlayHead())
+    if(auto position=playhead->getPosition()) if(auto bpm=position->getBpm())
+      if(std::isfinite(*bpm)&&*bpm>=20.&&*bpm<=400.) p.hostBpm=static_cast<float>(*bpm);
+  hostBpm.store(p.hostBpm,std::memory_order_relaxed);
+  for(size_t i=0;i<pProtect.size();++i) p.protect[i]=pProtect[i]->load(std::memory_order_relaxed)*.01f;
   const bool listenRequested = pListen->load() > 0.5f;
   p.deltaListen = pDelta->load() > 0.5f && !listenRequested;
   engine.setParams(p);
@@ -256,13 +271,18 @@ void SkellAudioProcessor::setStateInformation(const void* data, int size) {
         legacyDefault.setProperty("value", 0.0f, nullptr);
         state.appendChild(legacyDefault, nullptr);
       }
-      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight"}) {
+      for (const auto* id : {"smartSpace", "punchProtect", "bassProtect", "adaptiveRelease", "deltaListen", "spectralFocus", "vocalFocus", "perceptualFocus", "harmonicProtect", "depthBudget", "sonicTerritory", "humanEar", "componentProtect", "foresight", "tempoRecovery"}) {
         if (!state.getChildWithProperty("id", id).isValid()) {
           juce::ValueTree legacyDefault("PARAM");
           legacyDefault.setProperty("id", id, nullptr);
           legacyDefault.setProperty("value", 0.0f, nullptr);
           state.appendChild(legacyDefault, nullptr);
         }
+      }
+      for(const auto* id:protectionIds) if(!state.getChildWithProperty("id",id).isValid()) {
+        juce::ValueTree node("PARAM");
+        node.setProperty("id",id,nullptr); node.setProperty("value",0.f,nullptr);
+        state.appendChild(node,nullptr);
       }
       parameters.replaceState(state);
     }

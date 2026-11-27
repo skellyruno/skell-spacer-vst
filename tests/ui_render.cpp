@@ -97,15 +97,36 @@ int main(int argc, char** argv) {
     if(!logo)return 1;
     logo->triggerClick(); pump(); feed(p,20); capture("04_alternate_theme.png");
     if(full) {
+      auto* brush=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="protect_brush";});
+      auto* clear=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="protect_clear";});
+      auto* graph=find<SpectrumView>(*ed,[](SpectrumView&){return true;});
+      if(!brush||!clear||!graph)return 1;
+      brush->triggerClick(); pump();
+      auto src=juce::Desktop::getInstance().getMainMouseSource();
+      const auto point=juce::Point<float>(graph->getWidth()*.55f,graph->getHeight()*.28f);
+      juce::MouseEvent down(src,point,juce::ModifierKeys::leftButtonModifier,0.f,0.f,0.f,0.f,0.f,graph,graph,juce::Time::getCurrentTime(),point,juce::Time::getCurrentTime(),1,false);
+      graph->mouseDown(down); graph->mouseDrag(down.withNewPosition({point.x+graph->getWidth()*.18f,point.y})); graph->mouseUp(down);
+      float peak=0.f;int changed=0;
+      for(const auto* id:SkellAudioProcessor::protectionIds){const float v=p.parameters.getRawParameterValue(id)->load();peak=std::max(peak,v);changed+=v>0.f?1:0;}
+      check(peak>40.f&&changed>=3,"Brush writes interpolated host nodes");
+      feed(p,65);capture("05_protection_brush.png");
+      clear->triggerClick();pump(); bool cleared=true;
+      for(const auto* id:SkellAudioProcessor::protectionIds)cleared&=p.parameters.getRawParameterValue(id)->load()==0.f;
+      check(cleared,"Clear resets all brush nodes");
+      brush->triggerClick();pump();
+      select->setSelectedId(15,juce::sendNotificationSync);pump();
+      value->setValue(70.,juce::sendNotificationSync);
+      check(p.parameters.getRawParameterValue("tempoRecovery")->load()>69.f,"Tempo control binding");
+      feed(p,20);capture("06_tempo_recovery.png");
       select->setSelectedId(12,juce::sendNotificationSync); pump();
-      ed->setSize(396,324); capture("05_smart_minimum.png");
-      ed->setSize(990,810); capture("06_smart_maximum.png");
+      ed->setSize(396,324); capture("07_smart_minimum.png");
+      ed->setSize(990,810); capture("08_smart_maximum.png");
       ed->setSize(SkellAudioProcessorEditor::defaultWidth,SkellAudioProcessorEditor::defaultHeight);
     }
     juce::DynamicObject::Ptr meta(new juce::DynamicObject());
     meta->setProperty("revision",juce::String(argv[3]));
     meta->setProperty("renderer","real SkellAudioProcessorEditor");
-    meta->setProperty("frame_count",full?6:4);
+    meta->setProperty("frame_count",full?8:4);
     meta->setProperty("failures",failures);
     meta->setProperty("width",ed->getWidth()*2); meta->setProperty("height",ed->getHeight()*2);
     out.getChildFile("manifest.json").replaceWithText(juce::JSON::toString(juce::var(meta.get())));

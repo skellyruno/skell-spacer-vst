@@ -26,15 +26,28 @@ public:
   int getSliderThumbRadius(juce::Slider&) override;
 };
 
-class SpectrumView final : public juce::Component {
+class SpectrumView final : public juce::Component, public juce::SettableTooltipClient {
 public:
   explicit SpectrumView(SkellAudioProcessor& p) : proc(p) {}
   void tick();
   void paint(juce::Graphics&) override;
   float maxCutDb() const { return peakCut; }
-  void setSmartView(bool show) { smartView = show; repaint(); }
+  ~SpectrumView() override { endBrushGesture(); }
+  void setSmartView(bool show) { smartView = show; if(!show) setBrushMode(false); repaint(); }
+  void setBrushMode(bool enabled);
+  void mouseDown(const juce::MouseEvent&) override;
+  void mouseDrag(const juce::MouseEvent&) override;
+  void mouseUp(const juce::MouseEvent&) override;
+  void clearBrush();
   const skell::ZeroLatencyEngine::SmartSnapshot& smartData() const { return smartSnapshot; }
 private:
+  void paintBrush(juce::Graphics&,juce::Rectangle<float>,float);
+  void brushAt(juce::Point<float>,bool);
+  void endBrushGesture();
+  bool brushMode=false, brushDragging=false, brushErase=false;
+  int lastBrushNode=-1;
+  float lastBrushValue=0.f;
+  std::array<bool,skell::ProtectionCurve::count> brushGestures{};
   SkellAudioProcessor& proc;
   static constexpr int N = skell::ZeroLatencyEngine::kDisp;
   float mainDb[N] = {}, scDb[N] = {}, cutDb[N] = {};
@@ -86,7 +99,7 @@ private:
   SpectrumView spectrum;
   juce::Slider amount, smooth, pan, attack, release;
   juce::TextButton freeze { "Freeze" }, power { "Power" }, listen { "Listen" }, skinButton, msToggle, bandToggle;
-  juce::TextButton smartPageButton {"Smart"}, deltaButton {"Delta"};
+  juce::TextButton smartPageButton {"Smart"}, deltaButton {"Delta"}, brushButton {"Brush"}, clearBrushButton {"Clear"};
   SmartLookAndFeel smartLook;
   juce::ComboBox smartSelector;
   juce::Slider smartValue;

@@ -37,6 +37,8 @@ public:
 
   juce::AudioProcessorValueTreeState parameters;
   static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
+  static constexpr const char* protectionIds[skell::ProtectionCurve::count]={"protect00", "protect01", "protect02", "protect03", "protect04", "protect05", "protect06", "protect07", "protect08", "protect09", "protect10", "protect11", "protect12", "protect13", "protect14", "protect15", "protect16", "protect17", "protect18", "protect19", "protect20"};
+  float getHostBpm() const { return hostBpm.load(std::memory_order_relaxed); }
 
 private:
   skell::ZeroLatencyEngine engine;      // zero latency: the plugin never reports a delay to the host
@@ -44,6 +46,9 @@ private:
   std::atomic<float> *pSmart{}, *pPunch{}, *pBass{}, *pAdaptive{}, *pDelta{};
   std::atomic<float> *pSpectral{}, *pVocal{}, *pPerceptual{}, *pHarmonic{}, *pDepth{};
   std::atomic<float> *pTerritory{}, *pEar{}, *pComponent{}, *pForesight{};
+  std::atomic<float>* pTempo{};
+  std::array<std::atomic<float>*,skell::ProtectionCurve::count> pProtect{};
+  std::atomic<float> hostBpm{0.f};
   std::atomic<bool> sidechainActive{false};
   std::atomic<double> sampleRateHz{44100.0};
   std::atomic<int> themeIndex{0};
