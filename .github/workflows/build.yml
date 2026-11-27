@@ -16,6 +16,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Export exact source for offline Quick4
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        run: |
+          mkdir -p offline-source
+          git rev-parse HEAD > offline-source/revision.txt
+          git archive --format=zip --output=offline-source/spacer-source.zip HEAD
+          cd offline-source
+          sha256sum spacer-source.zip revision.txt > SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'pull_request' && github.head_ref == 'fix/spacer-v17-optimization-parity-20261125'
+        with:
+          name: SkellSpacer-Offline-Source
+          path: offline-source/
+          if-no-files-found: error
+          retention-days: 7
       - name: Baseline parity and four-instance DSP benchmark
         run: |
           mkdir -p baseline quality-artifacts

@@ -238,7 +238,8 @@ public:
       phaseMidEnergy = phaseSideEnergy = phaseSideBlend = 0.f;
     }
     if (nSc > 0) hadSc = true;
-    if (lastKeyChannels != nSc) {
+    if (lastKeyChannels != nSc ||
+        (params.sonicTerritory==0.f && focusBlend[5]==0.f)) {
       keyEnergy[0] = keyEnergy[1] = 0.f;
       lastKeyChannels = nSc;
     }

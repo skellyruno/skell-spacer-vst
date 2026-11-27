@@ -1,6 +1,23 @@
 #include "PluginEditor.h"
 #include "SkellTheme.h"
 using namespace skelltheme;
+namespace {
+struct SmartControl { const char* id; const char* name; };
+constexpr SmartControl smartControls[] = {
+  {"smartSpace","Smart Space"}, {"punchProtect","Punch Protect"}, {"bassProtect","808 Protection"},
+  {"adaptiveRelease","Adaptive Release"}, {"spectralFocus","Spectral Focus"}, {"vocalFocus","Vocal Focus"},
+  {"perceptualFocus","Perceptual Focus"}, {"harmonicProtect","Harmonic Protect"}, {"depthBudget","Adaptive Depth"},
+  {"sonicTerritory","Sonic Territory"}, {"humanEar","Human Ear"}, {"componentProtect","Component Protect"},
+  {"foresight","Musical Foresight"}, {"levelSensitivity","Level Sensitivity"}
+};
+constexpr int smartControlCount = sizeof(smartControls)/sizeof(smartControls[0]);
+juce::String percentMetric(float numerator, float denominator, bool reduction) {
+  if (!std::isfinite(numerator) || !std::isfinite(denominator) || denominator <= 1e-10f) return "--";
+  float pct=100.f*numerator/denominator;
+  if (reduction) pct=100.f-pct;
+  return juce::String(juce::jlimit(-999.f,999.f,pct),1)+"%";
+}
+}
 
 // ---------------------------------------------------------------- look & feel
 void SkellLookAndFeel::sync() const { if (themeIndex != nullptr) applyTheme(*themeIndex); }
@@ -156,6 +173,7 @@ void SpectrumView::tick() {
   // consistent when the message thread is delayed.
   if (!primed || now - lastAnalysisMs >= 30.0) {
     proc.readSpectrum(mainDb, scDb, cutDb);
+    if (smartView) smartSnapshot=proc.readSmartSnapshot();
     lastAnalysisMs = now;
   }
   const auto coefficient = [dt](float old) {
@@ -173,6 +191,10 @@ void SpectrumView::tick() {
     pk = juce::jmax(pk, sCut[i]);
   }
   peakCut = pk;
+  if (smartView) for (int i=0;i<skell::ZeroLatencyEngine::kBands;++i) {
+    overlap[i] += (smartSnapshot.overlap[i]-overlap[i])*cutFollow;
+    protection[i] += (smartSnapshot.protection[i]-protection[i])*cutFollow;
+  }
   primed = true;
   repaint();
 }
@@ -187,6 +209,20 @@ void SpectrumView::paint(juce::Graphics& g) {
   auto xAt = [&](int i) { return area.getX() + area.getWidth() * (float) i / (N - 1); };
   auto xHz = [&](float f) { return area.getX() + area.getWidth() * std::log(f / 20.0f) / std::log(1000.0f); };
 
+  // Heatmap lives behind the actual spectrum. Amber = conflict, accent =
+  // protected target. The existing cut curve shows actual attenuation.
+  if (smartView) {
+    for (int i=0;i<skell::ZeroLatencyEngine::kBands;++i) {
+      const float lo=20.f*std::exp2((float)i/skell::ZeroLatencyEngine::kBandsPerOct);
+      const float hi=20.f*std::exp2((float)(i+1)/skell::ZeroLatencyEngine::kBandsPerOct);
+      if (lo>=20000.f) break;
+      const float x=xHz(lo), width=std::max(0.f,xHz(std::min(hi,20000.f))-x);
+      g.setColour(kWarn.withAlpha(.36f*juce::jlimit(0.f,1.f,overlap[i])));
+      g.fillRect(x,area.getY()+17.f*s,width,area.getHeight()-32.f*s);
+      g.setColour(kAccent.withAlpha(.85f*juce::jlimit(0.f,1.f,protection[i])));
+      g.fillRect(x,area.getBottom()-20.f*s,width,3.f*s);
+    }
+  }
   const char* labs[] = { "100", "1k", "10k" }; int li = 0;
   for (float f : { 100.0f, 1000.0f, 10000.0f }) {
     g.setColour(kLine);
@@ -221,7 +257,7 @@ void SpectrumView::paint(juce::Graphics& g) {
   // cut curve (accent)
   juce::Path cut;
   for (int i = 0; i < N; ++i) {
-    auto y = y0 + span * sCut[i] / skell::ZeroLatencyEngine::kMaxCutDb;
+    auto y = y0 + span * juce::jlimit(0.f,1.f,sCut[i] / skell::ZeroLatencyEngine::kMaxCutDb);
     i ? cut.lineTo(xAt(i), y) : cut.startNewSubPath(xAt(i), y);
   }
   g.setColour(kAccent.withAlpha(0.22f));
@@ -315,6 +351,7 @@ BandControl::BandControl(juce::RangedAudioParameter& lo, juce::RangedAudioParame
 // ---------------------------------------------------------------- editor
 SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
  : AudioProcessorEditor(&p), proc(p), spectrum(p),
+   deltaA(p.parameters, "deltaListen", deltaButton),
    amountA(p.parameters, "amount", amount), smoothA(p.parameters, "smooth", smooth),
    panA(p.parameters, "pan", pan),
    attackA(p.parameters, "attack", attack), releaseA(p.parameters, "release", release),
@@ -404,11 +441,32 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
     theme = (theme + 1) % numThemes;
     proc.setTheme(theme);
     applyTheme(theme);
+    updateSmartColours();
     skinButton.setTooltip("Click the logo to change the look  (now: " + juce::String(themes[theme].name) + ")");
     repaint();
   };
   addAndMakeVisible(skinButton);
   addAndMakeVisible(spectrum);
+
+  for (auto* b : {&smartPageButton,&deltaButton}) {
+    b->setLookAndFeel(look.get()); b->setClickingTogglesState(true);
+    addAndMakeVisible(*b);
+  }
+  smartPageButton.setComponentID("smart_page");
+  deltaButton.setComponentID("delta_monitor");
+  smartPageButton.setTooltip("Open the advanced Smart Space controls and diagnostics; does not change the sound");
+  deltaButton.setTooltip("Monitor dry minus processed audio. Sidechain Listen takes priority");
+  smartPageButton.onClick=[this]{showSmartPage(smartPageButton.getToggleState());};
+  smartSelector.setComponentID("smart_selector");
+  for(int i=0;i<smartControlCount;++i) smartSelector.addItem(smartControls[i].name,i+1);
+  smartSelector.setSelectedId(1,juce::dontSendNotification);
+  smartSelector.onChange=[this]{bindSmartControl();};
+  smartValue.setComponentID("smart_value");
+  smartValue.setSliderStyle(juce::Slider::LinearHorizontal);
+  smartValue.setTextBoxStyle(juce::Slider::TextBoxRight,false,52,22);
+  addChildComponent(smartSelector); addChildComponent(smartValue);
+  updateSmartColours();
+  bindSmartControl();
 
   band.sendInitialUpdate();
   scBand.sendInitialUpdate();
@@ -418,10 +476,37 @@ SkellAudioProcessorEditor::SkellAudioProcessorEditor(SkellAudioProcessor& p)
 
 SkellAudioProcessorEditor::~SkellAudioProcessorEditor() {
   stopTimer();
-  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &pan, &attack, &release, &band.slider, &scBand.slider, &freeze, &power, &listen, &msToggle, &bandToggle, &skinButton })
+  for (auto* c : std::initializer_list<juce::Component*> { &amount, &smooth, &pan, &attack, &release, &band.slider, &scBand.slider, &freeze, &power, &listen, &msToggle, &bandToggle, &skinButton, &smartPageButton, &deltaButton })
     c->setLookAndFeel(nullptr);
 }
 
+void SkellAudioProcessorEditor::updateSmartColours() {
+  smartSelector.setColour(juce::ComboBox::backgroundColourId,kPanelHi);
+  smartSelector.setColour(juce::ComboBox::textColourId,kBone);
+  smartSelector.setColour(juce::ComboBox::outlineColourId,kLine);
+  smartSelector.setColour(juce::ComboBox::arrowColourId,kAccent);
+  smartValue.setColour(juce::Slider::trackColourId,kAccent);
+  smartValue.setColour(juce::Slider::backgroundColourId,kLine);
+  smartValue.setColour(juce::Slider::thumbColourId,kBone);
+  smartValue.setColour(juce::Slider::textBoxTextColourId,kBone);
+  smartValue.setColour(juce::Slider::textBoxBackgroundColourId,kPanelHi);
+  smartValue.setColour(juce::Slider::textBoxOutlineColourId,kLine);
+}
+void SkellAudioProcessorEditor::bindSmartControl() {
+  const int i=juce::jlimit(0,smartControlCount-1,smartSelector.getSelectedId()-1);
+  smartValueA.reset();
+  smartValueA=std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment>(proc.parameters,smartControls[i].id,smartValue);
+  smartValue.setTooltip(juce::String(smartControls[i].name)+" — opt-in percentage");
+}
+void SkellAudioProcessorEditor::showSmartPage(bool show) {
+  if (entry.isVisible()) { entry.hideEditor(false); entry.setVisible(false); }
+  smartPage=show;
+  for (auto* s : {&amount,&smooth,&pan,&attack,&release}) s->setVisible(!show);
+  msToggle.setVisible(!show);
+  smartSelector.setVisible(show); smartValue.setVisible(show);
+  spectrum.setSmartView(show);
+  repaint();
+}
 void SkellAudioProcessorEditor::mouseDown(const juce::MouseEvent& e) {
   if (!e.mods.isPopupMenu()) return;
   if (auto* s = dynamic_cast<juce::Slider*>(e.eventComponent); s != nullptr && s->isRotary()) beginTypedEntry(*s);
@@ -461,6 +546,7 @@ void SkellAudioProcessorEditor::timerCallback() {
   // Offscreen native editor audit uses an unattached editor, so do not
   // require a desktop peer before refreshing the spectrum.
   spectrum.tick();
+  if (smartPage) repaintDesign({14.f,256.f,522.f,104.f});
   const int lit = juce::jlimit(0, 48, juce::roundToInt(spectrum.maxCutDb() / skell::ZeroLatencyEngine::kMaxCutDb * 48.0f));
   if (lit != previousMeterSegments) {
     previousMeterSegments = lit;
@@ -518,6 +604,18 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
 
   // controls card
   drawCard(g, { 14.0f, 256.0f, 522.0f, 104.0f });
+  if (smartPage) {
+    drawText(g,"SMART SPACE  /  EXPERIMENTAL",{28.f,262.f,494.f,14.f},10.f,true,kBoneDim,juce::Justification::centredLeft,.1f);
+    const auto& d=spectrum.smartData();
+    const bool active=proc.parameters.getRawParameterValue("smartSpace")->load()>0.f;
+    const auto label=[&](const juce::String& name,const juce::String& value,float x){
+      drawText(g,name,{x,316.f,155.f,12.f},9.5f,true,kBoneDim,juce::Justification::centred,.08f);
+      drawText(g,active?value:juce::String("--"),{x,330.f,155.f,18.f},13.f,true,kAccent,juce::Justification::centred);
+    };
+    label("MODELED UNMASK",percentMetric(d.modeledConflictAfter,d.modeledConflictBefore,true),30.f);
+    label("ENERGY RETAINED",percentMetric(d.outputPower,d.inputPower,false),197.f);
+    label("ONSET RETAINED",percentMetric(d.onsetOutput,d.onsetInput,false),364.f);
+  } else {
   const float cellW = 522.0f / 5.0f;
   const bool msOn = proc.parameters.getRawParameterValue("ms")->load() > 0.5f;
   const juce::String panName = msOn ? "PAN  M / S" : "PAN  L / R";
@@ -526,6 +624,8 @@ void SkellAudioProcessorEditor::paint(juce::Graphics& g) {
     drawText(g, names[i], { 14.0f + cellW * (float) i, 336.0f, cellW, 16.0f }, 10.5f, true, kBoneDim, juce::Justification::centred, 0.2f);
   g.setColour(kLine);
   for (int i = 1; i < 5; ++i) g.fillRect(14.0f + cellW * (float) i, 268.0f, 1.0f, 80.0f);
+
+  }
 
   // band / sidechain-filter card: the title row is a two-way switch
   drawCard(g, { 14.0f, 368.0f, 522.0f, 70.0f });
@@ -556,6 +656,10 @@ void SkellAudioProcessorEditor::resized() {
   power.setBounds(fit(506.0f, 10.0f, 30.0f, 30.0f));          // top-right corner
   listen.setBounds(fit(468.0f, 10.0f, 30.0f, 30.0f));
   freeze.setBounds(fit(404.0f, 15.0f, 56.0f, 20.0f));
+  smartPageButton.setBounds(fit(274.f,14.f,62.f,22.f));
+  deltaButton.setBounds(fit(340.f,14.f,58.f,22.f));
+  smartSelector.setBounds(fit(29.f,280.f,190.f,28.f));
+  smartValue.setBounds(fit(231.f,280.f,291.f,28.f));
   spectrum.setBounds(fit(28.0f, 90.0f, 494.0f, 152.0f));
   const float cellW = 522.0f / 5.0f, kd = 62.0f;
   juce::Slider* knobs[5] = { &amount, &smooth, &pan, &attack, &release };

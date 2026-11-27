@@ -65,6 +65,45 @@ int main(int argc, char** argv) {
     std::printf("[%s] offline Spacer editor demonstration\n",ok?"PASS":"FAIL");
     return ok?0:1;
   }
+  if (argc==4 && juce::String(argv[1])=="--quick4") {
+    juce::File out(argv[2]); out.createDirectory();
+    SkellAudioProcessor p; p.enableAllBuses(); p.setRateAndBufferSizeDetails(48000.,512); p.prepareToPlay(48000.,512);
+    std::unique_ptr<juce::AudioProcessorEditor> ed(p.createEditor());
+    ed->setSize(SkellAudioProcessorEditor::defaultWidth,SkellAudioProcessorEditor::defaultHeight);
+    const auto capture=[&](const char* name){
+      pump(100); const auto img=ed->createComponentSnapshot(ed->getLocalBounds(),true,2.f);
+      savePng(img,out.getChildFile(name)); check(!img.isNull()&&out.getChildFile(name).getSize()>0,name);
+    };
+    capture("01_classic.png");
+    auto* page=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="smart_page";});
+    auto* delta=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="delta_monitor";});
+    auto* select=find<juce::ComboBox>(*ed,[](juce::ComboBox& b){return b.getComponentID()=="smart_selector";});
+    auto* value=find<juce::Slider>(*ed,[](juce::Slider& s){return s.getComponentID()=="smart_value";});
+    if(!page||!delta||!select||!value) return 1;
+    page->triggerClick(); pump();
+    value->setValue(100.,juce::sendNotificationSync);
+    check(p.parameters.getRawParameterValue("smartSpace")->load()>99.f,"Smart UI binds master");
+    p.parameters.getParameter("punchProtect")->setValueNotifyingHost(.65f);
+    p.parameters.getParameter("bassProtect")->setValueNotifyingHost(.70f);
+    p.parameters.getParameter("adaptiveRelease")->setValueNotifyingHost(.60f);
+    select->setSelectedId(2,juce::sendNotificationSync); pump();
+    check(std::abs(value->getValue()-65.)<.2,"Smart selector rebinds selected parameter");
+    feed(p,65); capture("02_smart_active.png");
+    delta->triggerClick(); pump(); check(p.parameters.getRawParameterValue("deltaListen")->load()>.5f,"Delta UI binding");
+    feed(p,20); capture("03_delta_active.png");
+    delta->triggerClick(); pump(); check(p.parameters.getRawParameterValue("deltaListen")->load()<.5f,"Delta off");
+    auto* logo=find<juce::TextButton>(*ed,[](juce::TextButton& b){return b.getComponentID()=="logo";});
+    if(!logo)return 1;
+    logo->triggerClick(); pump(); feed(p,20); capture("04_alternate_theme.png");
+    juce::DynamicObject::Ptr meta(new juce::DynamicObject());
+    meta->setProperty("revision",juce::String(argv[3]));
+    meta->setProperty("renderer","real SkellAudioProcessorEditor");
+    meta->setProperty("frame_count",4);
+    meta->setProperty("failures",failures);
+    meta->setProperty("width",ed->getWidth()*2); meta->setProperty("height",ed->getHeight()*2);
+    out.getChildFile("manifest.json").replaceWithText(juce::JSON::toString(juce::var(meta.get())));
+    return failures?1:0;
+  }
   const juce::File outDir(argc > 1 ? argv[1] : ".");
   outDir.createDirectory();
 

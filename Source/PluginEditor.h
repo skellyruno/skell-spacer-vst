@@ -23,13 +23,17 @@ public:
   void tick();
   void paint(juce::Graphics&) override;
   float maxCutDb() const { return peakCut; }
+  void setSmartView(bool show) { smartView = show; repaint(); }
+  const skell::ZeroLatencyEngine::SmartSnapshot& smartData() const { return smartSnapshot; }
 private:
   SkellAudioProcessor& proc;
   static constexpr int N = skell::ZeroLatencyEngine::kDisp;
   float mainDb[N] = {}, scDb[N] = {}, cutDb[N] = {};
   float sMain[N] = {}, sSc[N] = {}, sCut[N] = {};
   float peakCut = 0.0f;
-  bool primed = false;
+  bool primed = false, smartView = false;
+  skell::ZeroLatencyEngine::SmartSnapshot smartSnapshot;
+  float overlap[skell::ZeroLatencyEngine::kBands] = {}, protection[skell::ZeroLatencyEngine::kBands] = {};
   double lastTickMs = 0.0, lastAnalysisMs = 0.0;
 };
 
@@ -63,6 +67,9 @@ private:
   void repaintDesign(juce::Rectangle<float> r);
   void mouseDown(const juce::MouseEvent&) override;
   void beginTypedEntry(juce::Slider&);
+  void showSmartPage(bool);
+  void bindSmartControl();
+  void updateSmartColours();
 
   SkellAudioProcessor& proc;
   int theme = 0;
@@ -70,6 +77,12 @@ private:
   SpectrumView spectrum;
   juce::Slider amount, smooth, pan, attack, release;
   juce::TextButton freeze { "Freeze" }, power { "Power" }, listen { "Listen" }, skinButton, msToggle, bandToggle;
+  juce::TextButton smartPageButton {"Smart"}, deltaButton {"Delta"};
+  juce::ComboBox smartSelector;
+  juce::Slider smartValue;
+  std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> smartValueA;
+  juce::AudioProcessorValueTreeState::ButtonAttachment deltaA;
+  bool smartPage = false;
 
   juce::AudioProcessorValueTreeState::SliderAttachment amountA, smoothA, panA, attackA, releaseA;
   juce::AudioProcessorValueTreeState::ButtonAttachment freezeA, powerA, listenA, msA;
