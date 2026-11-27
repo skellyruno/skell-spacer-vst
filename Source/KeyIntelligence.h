@@ -13,6 +13,13 @@ struct KeyIntelligence {
     const float ratio=power/std::max(reference,1e-18f);
     return .10f+.90f*std::max(ramp((ratio-.003f)/.060f),.75f*unit(trend));
   }
+  // Causal quiet-phrase rescue: a new rise earns short-lived confidence.
+  // Cancel on a pronounced fall rather than holding a decaying tail open.
+  // This is a level-history heuristic, not a speech or reverb classifier.
+  static float phraseHold(float held,float power,float history,float reference,float rise,float decay) {
+    if(power<std::max(1e-9f,.0005f*reference)||power<.20f*history) return 0.f;
+    return std::max(held*decay,rise>.65f?rise:0.f);
+  }
   // Fraction of the wet/dry segment permitted by the existing linked peak
   // ceiling. The dry endpoint is inside that ceiling. Never add a boost.
   static float safeWet(float dry,float wet,float cap) {

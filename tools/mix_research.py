@@ -83,6 +83,39 @@ def render(exe, main, key, rate, settings, scratch):
     return out.reshape(main.shape)
 
 
+def select_held_out(main, key, audio, candidates):
+    """Choose on the first 60%, verify once on the untouched final 40%.
+
+    A single within-recording holdout is not cross-song generalization. Audio
+    is processed continuously before splitting; no reset or shifted offsets.
+    If the holdout fails, keep Smart instead of choosing a new winner there.
+    """
+    split=int(len(main)*.6)
+    if min(split,len(main)-split)<2048:
+        return 'smart', {'status':'insufficient_holdout','split_frame':split}
+    parts=(slice(0,split),slice(split,None))
+    metrics=[]
+    for part in parts:
+        w=conflict_weights(key[part]); before=conflict(main[part],w)
+        power=energy(main[part])
+        if before<1e-12 or power<1e-12:
+            return 'smart', {'status':'silent_holdout_or_training','split_frame':split}
+        metrics.append({name:{'conflict_reduction':1-conflict(audio[name][part],w)/before,
+                              'energy_retention':energy(audio[name][part])/power} for name in candidates})
+    train,test=metrics
+    target=max(0.,train['smart']['conflict_reduction']*.90)
+    valid_target=max(0.,test['smart']['conflict_reduction']*.90)
+    eligible=[n for n in candidates if n!='classic' and train[n]['conflict_reduction']>=target]
+    chosen=max(eligible,key=lambda n:train[n]['energy_retention']) if eligible else 'smart'
+    passed=(test[chosen]['conflict_reduction']>=valid_target and
+            test[chosen]['energy_retention']>=test['smart']['energy_retention']-1e-6)
+    return chosen if passed else 'smart', {
+        'status':'passed' if passed else 'fallback_smart', 'split_frame':split,
+        'training_choice':chosen,'training_target':target,'holdout_target':valid_target,
+        'training':train,'holdout':test,
+        'scope':'within-recording time split only; no cross-song validation'}
+
+
 def research(exe, main, key, rate, out, oracle=None, separator=None):
     if len(main) < 1024 or energy(main)<1e-12 or energy(key)<1e-12:
         raise ValueError('silent or too short research input')
@@ -115,8 +148,7 @@ def research(exe, main, key, rate, out, oracle=None, separator=None):
         if oracle is not None:
             results[name]['oracle_error_rms']=float(np.sqrt(energy(x-audio['direct_key_oracle'])))
     target=max(0.,results['smart']['conflict_reduction']*.90)
-    eligible=[n for n in candidates if n!='classic' and results[n]['conflict_reduction']>=target]
-    choice=max(eligible,key=lambda n:results[n]['energy_retention']) if eligible else None
+    choice, validation=select_held_out(main,key,audio,candidates)
     # Private listening files: add the same key at the same alignment. Use
     # matched RMS and one common headroom scalar, not independent clipping.
     mixkey=oracle if oracle is not None else key
@@ -133,6 +165,7 @@ def research(exe, main, key, rate, out, oracle=None, separator=None):
     report={'rate':rate,'frames':len(main),'offset_samples':0,'metric':'relative spectral overlap proxy; not perceptual clarity',
             'settings_order':['amount','smart','cleanKey','phaseProtect','stereoDetail'],
             'assistant_recommendation':choice,'minimum_conflict_reduction':target,'steering_strength':strength,
+            'assistant_validation':validation,
             'listening_rms_gains':{n:float(g*headroom) for n,g in gains.items()},'results':results}
     report['source_sha256']={n:hashlib.sha256((out/n).read_bytes()).hexdigest() for n in ('source_bed.wav','source_key.wav','listen_key.wav')}
     (out/'report.json').write_text(json.dumps(report,indent=2))

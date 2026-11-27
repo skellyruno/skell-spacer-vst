@@ -53,6 +53,24 @@ jobs:
           ./current_parity | tee quality-artifacts/immediate-parent-parity.txt
           g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tools/render_research.cpp -o render_research
           python3 -m py_compile tools/mix_research.py tools/score_external_reference.py tests/research_tools_test.py
+      - name: Quiet phrase recovery, phase ceiling and main-detector parity
+        run: |
+          mkdir -p latest-parent/prior_smart unlinked_main quality-artifacts
+          set -o pipefail
+          for h in ZeroLatencyEngine SpacerDSP LevelSensitivity DetectorResponse SpectralIntelligence MixIntelligence ProtectionCurve KeyIntelligence; do
+            git show b68c004a1ae0f0c7231c1a7c09304596e4a21804:Source/$h.h | sed 's/namespace skell/namespace prior_skell/g' > latest-parent/prior_smart/$h.h
+            sed -e 's/namespace skell/namespace unlinked_main_skell/g' -e 's/mainLinked=true/mainLinked=false/g' Source/$h.h > unlinked_main/$h.h
+          done
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I latest-parent tests/quiet_phrase_test.cpp -o quiet_phrase_test
+          ./quiet_phrase_test | tee quality-artifacts/quiet-phrase.txt
+          g++ -O1 -g -std=c++17 -fsanitize=address,undefined -fno-omit-frame-pointer -no-pie -I Source -I latest-parent tests/quiet_phrase_test.cpp -o quiet_phrase_san
+          ./quiet_phrase_san
+          g++ -O2 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source tests/phase_recovery_test.cpp -o phase_recovery_test
+          ./phase_recovery_test | tee quality-artifacts/phase-recovery.txt
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I . tests/main_link_efficiency.cpp -o main_link_efficiency
+          ./main_link_efficiency | tee quality-artifacts/main-link-efficiency.txt
+          g++ -O3 -std=c++17 -Wall -Wextra -Wconversion -Werror -I Source -I latest-parent tests/smart_efficiency_test.cpp -o latest_parent_parity
+          ./latest_parent_parity | tee quality-artifacts/latest-parent-parity.txt
       - name: Smart Engine cached auditory geometry parity and four-instance benchmark
         run: |
           mkdir -p prior_smart quality-artifacts

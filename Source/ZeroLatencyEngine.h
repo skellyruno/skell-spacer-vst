@@ -65,6 +65,7 @@ public:
     mixStep = (float)(1.0 / (0.010 * fs));
     guardDecay = (float)std::exp(-1.0 / (0.010 * fs));
     guardRelease = (float)(1.0 - std::exp(-1.0 / (0.005 * fs)));
+    phaseRecover = (float)(1.0 - std::exp(-1.0 / (0.00010 * fs)));
     // Detect strong stereo anti-phase energy, then smoothly adapt the mono key.
     // Normal correlated L/R sidechains stay numerically unchanged.
     phaseEnergyCoef = (float)(1.0 - std::exp(-1.0 / (0.020 * fs)));
@@ -74,6 +75,8 @@ public:
     smartStep = std::min(1.f, stepSec / 0.050f);
     trendCoef = (float)(1.0-std::exp(-stepSec/.080f));
     cleanPeakDecay=std::exp(-stepSec/1.2f);
+    cleanHistoryCoef=1.f-std::exp(-stepSec/.045f);
+    cleanHoldDecay=std::exp(-stepSec/.180f);
     onsetFastCoef = (float)(1.0 - std::exp(-1.0 / (0.003 * fs)));
     onsetSlowCoef = (float)(1.0 - std::exp(-1.0 / (0.060 * fs)));
     meterCoef = (float)(1.0 - std::exp(-1.0 / (0.250 * fs)));
@@ -156,7 +159,7 @@ public:
     clearSmart();
     smartBlend = deltaMix = 0.f;
     std::fill(focusBlend, focusBlend + 9, 0.f);
-    std::fill(researchBlend,researchBlend+3,0.f); phaseMix=0.f;
+    std::fill(researchBlend,researchBlend+3,0.f); phaseMix=0.f; phaseWetLimit=1.f;
     brushBlend.fill(0.f); tempoBlend=0.f; tempoCurrent=releaseCoef;
     diagConflictBefore.store(0.f); diagConflictAfter.store(0.f);
     diagInput.store(0.f); diagOutput.store(0.f);
@@ -245,6 +248,9 @@ public:
       // Avoid stale right-channel detector state across negotiated layout changes.
       std::memset(mainAnaS[1], 0, sizeof mainAnaS[1]);
       std::memset(mainAnaPow[1], 0, sizeof mainAnaPow[1]);
+      // If a prior mono history exists, the newly negotiated right channel
+      // must start from silence, exactly as in the independent-bank path.
+      if(lastMainChannels!=0) mainLinked=false;
       prevIn[1] = prevOut[1] = 0.f;
       lastMainChannels = nCh;
     }
@@ -325,9 +331,14 @@ public:
       }
       const bool smartActive = params.smart > 0.f || smartBlend > 0.f;
       if (smartActive) {
-        analyseMain(0, DetectorResponse::safeKey(x0));
-        if (nCh > 1) analyseMain(1, DetectorResponse::safeKey(x1));
         const float u0 = DetectorResponse::safeKey(x0), u1 = DetectorResponse::safeKey(x1);
+        if(nCh>1&&mainLinked&&u0!=u1) {
+          std::memcpy(mainAnaS[1],mainAnaS[0],sizeof mainAnaS[0]);
+          std::memcpy(mainAnaPow[1],mainAnaPow[0],sizeof mainAnaPow[0]);
+          mainLinked=false;
+        }
+        analyseMain(0,u0);
+        if(nCh>1&&!mainLinked) analyseMain(1,u1);
         const float pwr = std::max(u0*u0, u1*u1);
         onsetFast += (pwr - onsetFast) * onsetFastCoef;
         onsetSlow += (pwr - onsetSlow) * onsetSlowCoef;
@@ -353,8 +364,12 @@ public:
       if (guardPk < 1.0e-20f) guardPk = 0.f;        // below -400 dBFS: silence (and keeps the follower out of denormals)
       if (phaseMix>0.f) {
         const float allowed=std::min(KeyIntelligence::safeWet(x0,y0,guardPk),KeyIntelligence::safeWet(x1,y1,guardPk));
-        if(allowed<1.f) {
-          const float wet=1.f-phaseMix*(1.f-allowed);
+        // Immediate reduction for the ceiling, but restore the wet path
+        // over a sub-millisecond recovery instead of a one-sample jump.
+        phaseWetLimit=std::min(allowed,phaseWetLimit+(1.f-phaseWetLimit)*phaseRecover);
+        if(allowed==1.f&&phaseWetLimit>.99999f)phaseWetLimit=1.f;
+        if(phaseWetLimit<1.f) {
+          const float wet=1.f-phaseMix*(1.f-phaseWetLimit);
           y0=x0*(1.f-wet)+y0*wet; y1=x1*(1.f-wet)+y1*wet;
         }
       }
@@ -493,19 +508,25 @@ private:
     for (auto& c : scLp) for (auto& f : c) f.ic1 = f.ic2 = 0.f;
     std::memset(anaS, 0, sizeof anaS);
     std::memset(anaPow, 0, sizeof anaPow);
-    std::fill(cleanPeak,cleanPeak+kBands,0.f);
+    clearClean();
     clearDetail(); detailActive=false;
+  }
+  void clearClean() {
+    std::fill(cleanPeak,cleanPeak+kBands,0.f);
+    std::fill(cleanHistory,cleanHistory+kBands,0.f);
+    std::fill(cleanHold,cleanHold+kBands,0.f);
   }
   void clearDetail() {
     std::memset(detailS,0,sizeof detailS); std::memset(detailPow,0,sizeof detailPow); detailLinked=true;
   }
   void clearSmart() {
-    std::fill(cleanPeak,cleanPeak+kBands,0.f);
+    clearClean();
     clearDetail(); detailActive=false;
     std::fill(keyHistory, keyHistory+kBands, 0.f);
     keyEnergy[0] = keyEnergy[1] = 0.f;
     std::memset(mainAnaS, 0, sizeof mainAnaS);
     std::memset(mainAnaPow, 0, sizeof mainAnaPow);
+    mainLinked=true;
     onsetFast = onsetSlow = meterIn = meterOut = meterOnsetIn = meterOnsetOut = 0.f;
     prevIn[0] = prevIn[1] = prevOut[0] = prevOut[1] = 0.f;
   }
@@ -549,7 +570,7 @@ private:
       v2 = s3[i] + a2 * s2[i] + a3 * v3;
       s2[i] = 2.f * v1 - s2[i]; s3[i] = 2.f * v2 - s3[i];
       const float z = v1 * anaK[i];
-      pw[i] += (z*z - pw[i]) * anaPowCoef[i] + 1e-30f;
+      pw[i] += (z*z - pw[i]) * activePowCoef[i] + 1e-30f;
     }
   }
   float onsetStrength() const {
@@ -681,19 +702,21 @@ private:
       float& v=researchBlend[j]; const float g=researchTarget[j];
       v=g>v?std::min(g,v+smartStep):std::max(g,v-smartStep);
     }
-    if(oldClean>0.f&&researchBlend[0]==0.f) std::fill(cleanPeak,cleanPeak+kBands,0.f);
+    if(oldClean>0.f&&researchBlend[0]==0.f) clearClean();
     const float detailMix=detailActive?smartBlend*researchBlend[2]:0.f;
     phaseMix=smartBlend*researchBlend[1];
+    if(phaseMix==0.f) phaseWetLimit=1.f;
     float detailedPower[kBands]; const float* powers=anaPow;
     const float* rightDetail=detailPow[detailLinked?0:1];
     if(detailMix>0.f) {
       for(int i=0;i<nb;++i) detailedPower[i]=anaPow[i]+detailMix*(.5f*(detailPow[0][i]+rightDetail[i])-anaPow[i]);
       powers=detailedPower;
     }
+    const float* mainRight=mainAnaPow[mainLinked?0:1];
     float mainPeak = 0.f;
     if (smartBlend > 0.f) {
       for (int i = 0; i < nb; ++i) {
-        const float m = mainAnaPow[0][i] + (nCh > 1 ? mainAnaPow[1][i] : mainAnaPow[0][i]);
+        const float m = mainAnaPow[0][i] + (nCh > 1 ? mainRight[i] : mainAnaPow[0][i]);
         mainPeak = std::max(mainPeak, m * density[i]);
       }
     }
@@ -711,8 +734,8 @@ private:
     if (advanced && focusBlend[1] > 0.f) {
       float highEnergy = 0.f, midEnergy = 0.f;
       for (int i = 0; i < nb; ++i) {
-        if (fc[i] >= 4500.f) highEnergy += anaPow[i];
-        else if (fc[i] >= 250.f) midEnergy += anaPow[i];
+        if (fc[i] >= 4500.f) highEnergy += powers[i];
+        else if (fc[i] >= 250.f) midEnergy += powers[i];
       }
       highFraction = highEnergy / std::max(highEnergy + midEnergy, 1e-18f);
     }
@@ -760,7 +783,7 @@ private:
         float t = blend > 0.f ? legacy * LevelSensitivity::scale(ps[i], blend) : legacy;
         float ac = aCoef, rc = rCoef;
         if (smartBlend > 0.f) {
-          const float m = mainAnaPow[0][i] + (nCh > 1 ? mainAnaPow[1][i] : mainAnaPow[0][i]);
+          const float m = mainAnaPow[0][i] + (nCh > 1 ? mainRight[i] : mainAnaPow[0][i]);
           // Relative main occupancy plus absolute floor: absent material should
           // not trigger unnecessary cuts; a broadband bed remains eligible.
           const float occupancy = smoothstep((m * density[i]) / std::max(0.025f * mainPeak, 1e-10f));
@@ -773,10 +796,10 @@ private:
           if (advanced) {
             using SI = SpectralIntelligence;
             const auto mainPower = [&](int b) {
-              return mainAnaPow[0][b] + (nCh > 1 ? mainAnaPow[1][b] : mainAnaPow[0][b]);
+              return mainAnaPow[0][b] + (nCh > 1 ? mainRight[b] : mainAnaPow[0][b]);
             };
             const float neighborPower = .5f*(mainPower(std::max(0,i-2)) + mainPower(std::min(nb-1,i+2)));
-            const float rawKey = 2.f*anaPow[i];
+            const float rawKey = 2.f*powers[i];
             if (focusBlend[0] > 0.f) extra *= SI::blend(focusBlend[0], SI::narrow(rawKey, ps[i]));
             if (focusBlend[1] > 0.f) extra *= SI::blend(focusBlend[1], SI::vocal(fc[i], highFraction));
             if (focusBlend[2] > 0.f) extra *= SI::blend(focusBlend[2], SI::perceptual(fc[i]));
@@ -789,27 +812,32 @@ private:
             float neighbors=0.f;
             for (int j=earLo[i];j<=earHi[i];++j) {
               const float wEar=earWeight[i][j-i+8];
-              if(wEar>0.f) neighbors += wEar*2.f*anaPow[j];
+              if(wEar>0.f) neighbors += wEar*2.f*powers[j];
             }
-            const float rawKey=2.f*anaPow[i];
+            const float rawKey=2.f*powers[i];
             extra *= SpectralIntelligence::blend(focusBlend[6],MixIntelligence::auditoryNeed(m,rawKey,neighbors/earSum[i]));
           }
           if (focusBlend[7] > 0.f)
             extra *= SpectralIntelligence::blend(focusBlend[7],MixIntelligence::component(fc[i],onset,conflict));
           if (focusBlend[8] > 0.f) {
-            const float current=2.f*anaPow[i];
+            const float current=2.f*powers[i];
             const float trend=MixIntelligence::rising(current,keyHistory[i]);
             ac=MixIntelligence::attack(ac,trend,smartBlend*focusBlend[8]);
           }
           // Always track while Smart is active to avoid a cold history on automation.
-          keyHistory[i] += trendCoef*(2.f*anaPow[i]-keyHistory[i]);
+          keyHistory[i] += trendCoef*(2.f*powers[i]-keyHistory[i]);
           if (keyHistory[i]<1e-20f) keyHistory[i]=0.f;
           // Suppress quiet tails only; no unused peak tracking in the legacy path.
           if(researchBlend[0]>0.f) {
             cleanPeak[i]=std::max(ps[i],cleanPeak[i]*cleanPeakDecay);
             if(cleanPeak[i]<1e-20f)cleanPeak[i]=0.f;
-            const float trend=MixIntelligence::rising(2.f*powers[i],keyHistory[i]);
-            extra*=SpectralIntelligence::blend(researchBlend[0],KeyIntelligence::confidence(ps[i],cleanPeak[i],trend));
+            // Compare the same spread-power domain against its own causal
+            // history, not a mono raw band from a different detector.
+            const float trend=MixIntelligence::rising(ps[i],cleanHistory[i]);
+            cleanHold[i]=KeyIntelligence::phraseHold(cleanHold[i],ps[i],cleanHistory[i],cleanPeak[i],trend,cleanHoldDecay);
+            cleanHistory[i]+=cleanHistoryCoef*(ps[i]-cleanHistory[i]);
+            if(cleanHistory[i]<1e-20f) cleanHistory[i]=0.f;
+            extra*=SpectralIntelligence::blend(researchBlend[0],KeyIntelligence::confidence(ps[i],cleanPeak[i],std::max(trend,cleanHold[i])));
           }
           const float factor = occupancy * keep * extra;
           t *= 1.f + smartBlend * (factor - 1.f);
@@ -880,12 +908,12 @@ private:
         float cut = cut0[i] * w[c];
         if (nCh==2 && !msApplied && smartBlend>0.f && focusBlend[5]>0.f &&
             lastKeyChannels==2 && keyEnergy[0]+keyEnergy[1]>1e-10f) {
-          const float local=MixIntelligence::territory(mainAnaPow[0][i],mainAnaPow[1][i],keyEnergy[0],keyEnergy[1],c);
+          const float local=MixIntelligence::territory(mainAnaPow[0][i],mainRight[i],keyEnergy[0],keyEnergy[1],c);
           cut *= SpectralIntelligence::blend(smartBlend*focusBlend[5],local);
         }
         if(detailMix>0.f&&detailPow[0][i]+rightDetail[i]>1e-10f) {
           // Detailed key positions replace broadband evidence progressively.
-          const float local=MixIntelligence::territory(mainAnaPow[0][i],mainAnaPow[1][i],detailPow[0][i],rightDetail[i],c);
+          const float local=MixIntelligence::territory(mainAnaPow[0][i],mainRight[i],detailPow[0][i],rightDetail[i],c);
           // Existing broad territory above is bypassed proportionally, so the
           // two spatial reductions are not multiplied at full detail.
           cut=cut+(cut0[i]*w[c]*local-cut)*detailMix;
@@ -1008,7 +1036,8 @@ private:
   float smartBlend = 0.f, smartStep = 0.f, deltaMix = 0.f;
   float focusBlend[9] = {}, keyHistory[kBands] = {}, keyEnergy[2] = {}, trendCoef=0.f;
   float researchBlend[3]={},cleanPeak[kBands]={},cleanPeakDecay=0.f,phaseMix=0.f;
-  bool detailActive=false,detailLinked=true;
+  float cleanHistory[kBands]={},cleanHold[kBands]={},cleanHistoryCoef=0.f,cleanHoldDecay=0.f;
+  bool detailActive=false,detailLinked=true,mainLinked=true;
   float detailS[2][4][kBands]={}, detailPow[2][kBands]={};
   ProtectionCurve::Nodes brushBlend{};
   float tempoBlend=0.f, tempoCurrent=0.f, tempoTarget=0.f;
@@ -1025,6 +1054,7 @@ private:
   int nb = kBands, step = 16, stepCount = 0;
   float stepSec = 0.f, mix = 0.f, mixStep = 0.002f, peak = 0.f;
   float guardPk = 0.f, guardGain = 1.f, guardDecay = 0.99f, guardRelease = 0.01f;
+  float phaseWetLimit=1.f,phaseRecover=0.f;
   float phaseMidEnergy = 0.f, phaseSideEnergy = 0.f, phaseSideBlend = 0.f;
   float phaseEnergyCoef = 0.001f, phaseBlendCoef = 0.001f;
   bool msApplied = false, bandDirty = true, anyActive = false, hadSc = false;
